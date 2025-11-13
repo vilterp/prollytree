@@ -73,6 +73,8 @@ impl PyTreeConfig {
 enum ProllyTreeWrapper {
     Memory(ProllyTree<32, InMemoryNodeStorage<32>>),
     File(ProllyTree<32, FileNodeStorage<32>>),
+    #[cfg(feature = "s3_storage")]
+    S3(ProllyTree<32, crate::storage::S3NodeStorage<32>>),
 }
 
 macro_rules! with_tree {
@@ -80,6 +82,8 @@ macro_rules! with_tree {
         match &*$self {
             ProllyTreeWrapper::Memory($tree) => $body,
             ProllyTreeWrapper::File($tree) => $body,
+            #[cfg(feature = "s3_storage")]
+            ProllyTreeWrapper::S3($tree) => $body,
         }
     };
 }
@@ -89,6 +93,8 @@ macro_rules! with_tree_mut {
         match &mut *$self {
             ProllyTreeWrapper::Memory($tree) => $body,
             ProllyTreeWrapper::File($tree) => $body,
+            #[cfg(feature = "s3_storage")]
+            ProllyTreeWrapper::S3($tree) => $body,
         }
     };
 }
@@ -101,11 +107,13 @@ struct PyProllyTree {
 #[pymethods]
 impl PyProllyTree {
     #[new]
-    #[pyo3(signature = (storage_type="memory", path=None, config=None))]
+    #[pyo3(signature = (storage_type="memory", path=None, config=None, bucket=None, prefix=None))]
     fn new(
         storage_type: &str,
         path: Option<String>,
         config: Option<&PyTreeConfig>,
+        bucket: Option<String>,
+        prefix: Option<String>,
     ) -> PyResult<Self> {
         let tree_config = if let Some(py_config) = config {
             TreeConfig::<32> {
@@ -136,9 +144,21 @@ impl PyProllyTree {
                 let tree = ProllyTree::<32, _>::new(storage, tree_config);
                 ProllyTreeWrapper::File(tree)
             }
+            #[cfg(feature = "s3_storage")]
+            "s3" => {
+                let bucket = bucket.ok_or_else(|| {
+                    PyValueError::new_err("S3 storage requires a bucket parameter")
+                })?;
+                let storage = crate::storage::S3NodeStorage::<32>::new_blocking(bucket, prefix)
+                    .map_err(|e| {
+                        PyValueError::new_err(format!("Failed to create S3 storage: {}", e))
+                    })?;
+                let tree = ProllyTree::<32, _>::new(storage, tree_config);
+                ProllyTreeWrapper::S3(tree)
+            }
             _ => {
                 return Err(PyValueError::new_err(
-                    "Invalid storage type. Use 'memory' or 'file'",
+                    "Invalid storage type. Use 'memory', 'file', or 's3'",
                 ))
             }
         };
