@@ -221,3 +221,6 @@ impl<const N: usize> NodeStorage<N> for FileNodeStorage<N> {
 
 #[cfg(feature = "rocksdb_storage")]
 pub use crate::rocksdb::RocksDBNodeStorage;
+
+#[cfg(feature = "s3_storage")]
+pub use crate::s3::S3NodeStorage;

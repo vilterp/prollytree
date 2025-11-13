@@ -14,7 +14,7 @@ limitations under the License.
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyBytesMethods, PyDict, PyList};
+use pyo3::types::{PyAny, PyBytes, PyBytesMethods, PyDict, PyList};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -32,6 +32,9 @@ use crate::{
     tree::{ProllyTree, Tree},
 };
 
+#[cfg(feature = "s3_storage")]
+use crate::storage::S3NodeStorage;
+
 #[cfg(feature = "sql")]
 use crate::sql::ProllyStorage;
 #[cfg(feature = "sql")]
@@ -47,6 +50,38 @@ struct PyTreeConfig {
     min_chunk_size: usize,
     max_chunk_size: usize,
     pattern: u64,
+}
+
+#[cfg(feature = "s3_storage")]
+#[pyclass(name = "S3Config")]
+struct PyS3Config {
+    bucket: String,
+    prefix: String,
+    region: Option<String>,
+    endpoint_url: Option<String>,
+    cache_size: usize,
+}
+
+#[cfg(feature = "s3_storage")]
+#[pymethods]
+impl PyS3Config {
+    #[new]
+    #[pyo3(signature = (bucket, prefix=String::new(), region=None, endpoint_url=None, cache_size=1000))]
+    fn new(
+        bucket: String,
+        prefix: String,
+        region: Option<String>,
+        endpoint_url: Option<String>,
+        cache_size: usize,
+    ) -> Self {
+        PyS3Config {
+            bucket,
+            prefix,
+            region,
+            endpoint_url,
+            cache_size,
+        }
+    }
 }
 
 #[pymethods]
@@ -73,6 +108,8 @@ impl PyTreeConfig {
 enum ProllyTreeWrapper {
     Memory(ProllyTree<32, InMemoryNodeStorage<32>>),
     File(ProllyTree<32, FileNodeStorage<32>>),
+    #[cfg(feature = "s3_storage")]
+    S3(ProllyTree<32, S3NodeStorage<32>>),
 }
 
 macro_rules! with_tree {
@@ -80,6 +117,8 @@ macro_rules! with_tree {
         match &*$self {
             ProllyTreeWrapper::Memory($tree) => $body,
             ProllyTreeWrapper::File($tree) => $body,
+            #[cfg(feature = "s3_storage")]
+            ProllyTreeWrapper::S3($tree) => $body,
         }
     };
 }
@@ -89,6 +128,8 @@ macro_rules! with_tree_mut {
         match &mut *$self {
             ProllyTreeWrapper::Memory($tree) => $body,
             ProllyTreeWrapper::File($tree) => $body,
+            #[cfg(feature = "s3_storage")]
+            ProllyTreeWrapper::S3($tree) => $body,
         }
     };
 }
@@ -101,11 +142,12 @@ struct PyProllyTree {
 #[pymethods]
 impl PyProllyTree {
     #[new]
-    #[pyo3(signature = (storage_type="memory", path=None, config=None))]
+    #[pyo3(signature = (storage_type="memory", path=None, config=None, s3_config=None))]
     fn new(
         storage_type: &str,
         path: Option<String>,
         config: Option<&PyTreeConfig>,
+        s3_config: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let tree_config = if let Some(py_config) = config {
             TreeConfig::<32> {
@@ -136,10 +178,58 @@ impl PyProllyTree {
                 let tree = ProllyTree::<32, _>::new(storage, tree_config);
                 ProllyTreeWrapper::File(tree)
             }
+            #[cfg(feature = "s3_storage")]
+            "s3" => {
+                let s3_cfg_any = s3_config.ok_or_else(|| {
+                    PyValueError::new_err("S3 storage requires s3_config parameter")
+                })?;
+
+                let s3_cfg = s3_cfg_any
+                    .downcast::<PyS3Config>()
+                    .map_err(|_| PyValueError::new_err("s3_config must be an S3Config instance"))?;
+
+                // Create AWS SDK config
+                let runtime = tokio::runtime::Runtime::new().map_err(|e| {
+                    PyValueError::new_err(format!("Failed to create runtime: {}", e))
+                })?;
+
+                let bucket = s3_cfg.borrow().bucket.clone();
+                let prefix = s3_cfg.borrow().prefix.clone();
+                let region = s3_cfg.borrow().region.clone();
+                let endpoint = s3_cfg.borrow().endpoint_url.clone();
+                let cache_size = s3_cfg.borrow().cache_size;
+
+                let client = runtime.block_on(async {
+                    let mut config_loader =
+                        aws_config::defaults(aws_config::BehaviorVersion::latest());
+
+                    if let Some(region_str) = region {
+                        config_loader =
+                            config_loader.region(aws_sdk_s3::config::Region::new(region_str));
+                    }
+
+                    let sdk_config = config_loader.load().await;
+
+                    let mut s3_config_builder = aws_sdk_s3::config::Builder::from(&sdk_config);
+
+                    if let Some(endpoint_url) = endpoint {
+                        s3_config_builder = s3_config_builder.endpoint_url(endpoint_url);
+                    }
+
+                    aws_sdk_s3::Client::from_conf(s3_config_builder.build())
+                });
+
+                let storage =
+                    S3NodeStorage::<32>::with_cache_size(client, bucket, prefix, cache_size);
+                let tree = ProllyTree::<32, _>::new(storage, tree_config);
+                ProllyTreeWrapper::S3(tree)
+            }
             _ => {
-                return Err(PyValueError::new_err(
-                    "Invalid storage type. Use 'memory' or 'file'",
-                ))
+                #[cfg(feature = "s3_storage")]
+                let msg = "Invalid storage type. Use 'memory', 'file', or 's3'";
+                #[cfg(not(feature = "s3_storage"))]
+                let msg = "Invalid storage type. Use 'memory' or 'file'";
+                return Err(PyValueError::new_err(msg));
             }
         };
 
@@ -1999,6 +2089,8 @@ fn sql_value_to_json(value: &SqlValue) -> serde_json::Value {
 #[pymodule]
 fn prollytree(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyTreeConfig>()?;
+    #[cfg(feature = "s3_storage")]
+    m.add_class::<PyS3Config>()?;
     m.add_class::<PyProllyTree>()?;
     m.add_class::<PyMemoryType>()?;
     m.add_class::<PyAgentMemorySystem>()?;

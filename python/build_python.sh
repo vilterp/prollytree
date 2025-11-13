@@ -17,10 +17,11 @@
 # Usage:
 #   ./build_python.sh                    # Build with default Python bindings
 #   ./build_python.sh --with-sql         # Build with SQL support
-#   ./build_python.sh --all-features     # Build with all features (Python + SQL)
-#   ./build_python.sh --features "python sql"  # Specify features explicitly
+#   ./build_python.sh --with-s3          # Build with S3 storage support
+#   ./build_python.sh --all-features     # Build with all features (Python + SQL + S3)
+#   ./build_python.sh --features "python sql s3_storage"  # Specify features explicitly
 #   ./build_python.sh --install          # Build and install the package
-#   ./build_python.sh --with-sql --install  # Build with SQL and install
+#   ./build_python.sh --with-sql --with-s3 --install  # Build with SQL and S3, then install
 
 set -e
 
@@ -33,15 +34,19 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
     echo ""
     echo "Options:"
     echo "  --with-sql           Build with SQL support"
-    echo "  --all-features       Build with all features (Python + SQL)"
-    echo "  --features FEATURES  Specify features explicitly (e.g., 'python sql')"
+    echo "  --with-s3            Build with S3 storage support"
+    echo "  --all-features       Build with all features (Python + SQL + S3)"
+    echo "  --features FEATURES  Specify features explicitly (e.g., 'python sql s3_storage')"
     echo "  --install            Install the built package after building"
     echo "  --help, -h           Show this help message"
     echo ""
     echo "Examples:"
-    echo "  ./build_python.sh                       # Basic Python bindings"
-    echo "  ./build_python.sh --with-sql            # With SQL support"
-    echo "  ./build_python.sh --with-sql --install  # Build and install with SQL"
+    echo "  ./build_python.sh                          # Basic Python bindings"
+    echo "  ./build_python.sh --with-sql               # With SQL support"
+    echo "  ./build_python.sh --with-s3                # With S3 storage support"
+    echo "  ./build_python.sh --with-sql --with-s3     # With SQL and S3"
+    echo "  ./build_python.sh --with-sql --install     # Build and install with SQL"
+    echo "  ./build_python.sh --all-features --install # Build with all features and install"
     exit 0
 fi
 
@@ -58,6 +63,9 @@ cd "$(dirname "$0")/.."
 
 # Parse command line arguments for features
 FEATURES="python"
+HAS_SQL=false
+HAS_S3=false
+
 for arg in "$@"; do
     case $arg in
         --features)
@@ -70,15 +78,31 @@ for arg in "$@"; do
             shift
             ;;
         --with-sql)
-            FEATURES="python sql"
+            HAS_SQL=true
+            shift
+            ;;
+        --with-s3)
+            HAS_S3=true
             shift
             ;;
         --all-features)
-            FEATURES="python sql"
+            HAS_SQL=true
+            HAS_S3=true
             shift
             ;;
     esac
 done
+
+# Build final features string
+if [ "$HAS_SQL" = true ] || [ "$HAS_S3" = true ]; then
+    FEATURES="python"
+    if [ "$HAS_SQL" = true ]; then
+        FEATURES="$FEATURES sql"
+    fi
+    if [ "$HAS_S3" = true ]; then
+        FEATURES="$FEATURES s3_storage"
+    fi
+fi
 
 # Build the wheel
 echo "🍹 Building wheel with maturin (features: $FEATURES)..."

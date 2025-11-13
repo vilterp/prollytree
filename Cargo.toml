@@ -44,6 +44,8 @@ pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 rocksdb = { version = "0.22", optional = true }
 ratatui = { version = "0.26", optional = true }
 crossterm = { version = "0.27", optional = true }
+aws-config = { version = "1.0", optional = true }
+aws-sdk-s3 = { version = "1.0", optional = true }
 
 [dev-dependencies]
 bytes = "1.10.1"
@@ -64,6 +66,7 @@ sql = ["dep:gluesql-core", "dep:async-trait", "dep:uuid", "dep:futures", "dep:to
 rig = ["dep:rig-core", "dep:tokio", "dep:async-trait"]
 python = ["dep:pyo3"]
 rocksdb_storage = ["dep:rocksdb", "dep:lru"]
+s3_storage = ["dep:aws-config", "dep:aws-sdk-s3", "dep:tokio", "dep:lru"]
 tui = ["dep:ratatui", "dep:crossterm", "dep:tokio"]
 
 [[bin]]
