@@ -34,9 +34,11 @@ impl<const N: usize> Default for TreeConfig<N> {
         TreeConfig {
             base: 257,
             modulus: 1_000_000_007,
-            min_chunk_size: 2,
-            max_chunk_size: 16 * 1024,
-            pattern: 0b11,
+            // Optimized for remote storage (S3, etc.) with higher latency
+            // Larger nodes reduce roundtrips at the cost of more data per fetch
+            min_chunk_size: 8,          // Minimum 8 entries per node
+            max_chunk_size: 256 * 1024, // Max 256K entries (rarely hit in practice)
+            pattern: 0b111111,          // 63 - split probability ~1.5% (~64-128 entries/node)
             root_hash: None,
             key_schema: None,
             value_schema: None,

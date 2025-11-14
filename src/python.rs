@@ -87,7 +87,7 @@ impl PyS3Config {
 #[pymethods]
 impl PyTreeConfig {
     #[new]
-    #[pyo3(signature = (base=4, modulus=64, min_chunk_size=1, max_chunk_size=4096, pattern=0))]
+    #[pyo3(signature = (base=257, modulus=1_000_000_007, min_chunk_size=8, max_chunk_size=256*1024, pattern=63))]
     fn new(
         base: u64,
         modulus: u64,
