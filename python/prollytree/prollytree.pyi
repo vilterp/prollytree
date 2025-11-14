@@ -69,11 +69,12 @@ class TreeConfig:
 
     def __init__(
         self,
-        base: int = 4,
-        modulus: int = 64,
-        min_chunk_size: int = 1,
-        max_chunk_size: int = 4096,
-        pattern: int = 0
+        base: int = 257,
+        modulus: int = 1_000_000_007,
+        min_chunk_size: int = 8,
+        max_chunk_size: int = 262144,
+        pattern: int = 63,
+        root_hash: Optional[bytes] = None
     ) -> None: ...
 
 class S3Config:

@@ -320,24 +320,56 @@ pub struct ProllyTree<const N: usize, S: NodeStorage<N>> {
 
 impl<const N: usize, S: NodeStorage<N>> Tree<N, S> for ProllyTree<N, S> {
     fn new(storage: S, config: TreeConfig<N>) -> Self {
-        let root = ProllyNode {
-            keys: Vec::new(),
-            key_schema: config.key_schema.clone(),
-            values: Vec::new(),
-            value_schema: config.value_schema.clone(),
-            is_leaf: true,
-            level: 0,
-            base: config.base,
-            modulus: config.modulus,
-            min_chunk_size: config.min_chunk_size,
-            max_chunk_size: config.max_chunk_size,
-            pattern: config.pattern,
-            split: false,
-            merged: false,
-            encode_types: Vec::new(),
-            encode_values: Vec::new(),
+        // Check if we should load an existing tree from storage
+        let (root, root_hash) = if let Some(existing_root_hash) = &config.root_hash {
+            // Try to load the root node from storage
+            if let Some(loaded_root) = storage.get_node_by_hash(existing_root_hash) {
+                (loaded_root, Some(existing_root_hash.clone()))
+            } else {
+                // Root hash provided but node not found in storage - create empty tree
+                let empty_root = ProllyNode {
+                    keys: Vec::new(),
+                    key_schema: config.key_schema.clone(),
+                    values: Vec::new(),
+                    value_schema: config.value_schema.clone(),
+                    is_leaf: true,
+                    level: 0,
+                    base: config.base,
+                    modulus: config.modulus,
+                    min_chunk_size: config.min_chunk_size,
+                    max_chunk_size: config.max_chunk_size,
+                    pattern: config.pattern,
+                    split: false,
+                    merged: false,
+                    encode_types: Vec::new(),
+                    encode_values: Vec::new(),
+                };
+                let hash = Some(empty_root.get_hash());
+                (empty_root, hash)
+            }
+        } else {
+            // No root hash provided - create new empty tree
+            let empty_root = ProllyNode {
+                keys: Vec::new(),
+                key_schema: config.key_schema.clone(),
+                values: Vec::new(),
+                value_schema: config.value_schema.clone(),
+                is_leaf: true,
+                level: 0,
+                base: config.base,
+                modulus: config.modulus,
+                min_chunk_size: config.min_chunk_size,
+                max_chunk_size: config.max_chunk_size,
+                pattern: config.pattern,
+                split: false,
+                merged: false,
+                encode_types: Vec::new(),
+                encode_values: Vec::new(),
+            };
+            let hash = Some(empty_root.get_hash());
+            (empty_root, hash)
         };
-        let root_hash = Some(root.get_hash());
+
         let mut tree = ProllyTree {
             root,
             storage,
@@ -355,6 +387,7 @@ impl<const N: usize, S: NodeStorage<N>> Tree<N, S> for ProllyTree<N, S> {
     fn insert_batch(&mut self, keys: &[Vec<u8>], values: &[Vec<u8>]) {
         self.root
             .insert_batch(keys, values, &mut self.storage, Vec::new());
+        self.persist_root();
     }
 
     fn update(&mut self, key: Vec<u8>, value: Vec<u8>) -> bool {

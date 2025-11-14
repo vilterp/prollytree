@@ -22,6 +22,7 @@ use std::sync::{Arc, Mutex};
 use crate::{
     agent::{AgentMemorySystem, MemoryType},
     config::TreeConfig,
+    digest::ValueDigest,
     git::{
         types::{DiffOperation, StorageBackend},
         versioned_store::{HistoricalAccess, HistoricalCommitAccess},
@@ -50,6 +51,7 @@ struct PyTreeConfig {
     min_chunk_size: usize,
     max_chunk_size: usize,
     pattern: u64,
+    root_hash: Option<Vec<u8>>,
 }
 
 #[cfg(feature = "s3_storage")]
@@ -87,13 +89,14 @@ impl PyS3Config {
 #[pymethods]
 impl PyTreeConfig {
     #[new]
-    #[pyo3(signature = (base=257, modulus=1_000_000_007, min_chunk_size=8, max_chunk_size=256*1024, pattern=63))]
+    #[pyo3(signature = (base=257, modulus=1_000_000_007, min_chunk_size=8, max_chunk_size=256*1024, pattern=63, root_hash=None))]
     fn new(
         base: u64,
         modulus: u64,
         min_chunk_size: usize,
         max_chunk_size: usize,
         pattern: u64,
+        root_hash: Option<Vec<u8>>,
     ) -> Self {
         PyTreeConfig {
             base,
@@ -101,6 +104,7 @@ impl PyTreeConfig {
             min_chunk_size,
             max_chunk_size,
             pattern,
+            root_hash,
         }
     }
 }
@@ -284,13 +288,24 @@ impl PyProllyTree {
         s3_config: Option<Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
         let tree_config = if let Some(py_config) = config {
+            // Convert root_hash from Vec<u8> to ValueDigest<32> if provided
+            let root_hash = py_config.root_hash.as_ref().and_then(|hash_vec| {
+                if hash_vec.len() == 32 {
+                    let mut hash_array = [0u8; 32];
+                    hash_array.copy_from_slice(hash_vec);
+                    Some(ValueDigest(hash_array))
+                } else {
+                    None
+                }
+            });
+
             TreeConfig::<32> {
                 base: py_config.base,
                 modulus: py_config.modulus,
                 min_chunk_size: py_config.min_chunk_size,
                 max_chunk_size: py_config.max_chunk_size,
                 pattern: py_config.pattern,
-                root_hash: None,
+                root_hash,
                 key_schema: None,
                 value_schema: None,
                 encode_types: vec![],
