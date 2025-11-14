@@ -166,15 +166,15 @@ class TestS3Storage(unittest.TestCase):
     reason="TEST_S3_BUCKET environment variable not set"
 )
 class TestS3Diff(unittest.TestCase):
-    """Test diff functionality between S3-backed prolly trees"""
+    """Test comparison functionality between S3-backed prolly trees"""
     
     def setUp(self):
         """Set up test fixtures"""
         self.bucket = os.getenv("TEST_S3_BUCKET")
         self.prefix = "test-prolly-diff/"
         
-    def test_diff_two_s3_trees(self):
-        """Test diff between two S3-backed prolly trees"""
+    def test_compare_two_s3_trees_via_hash(self):
+        """Test comparing two S3-backed prolly trees via root hash"""
         # Create first tree
         tree1 = ProllyTree(
             storage_type="s3",
@@ -196,14 +196,17 @@ class TestS3Diff(unittest.TestCase):
         tree2.insert(b"shared", b"modified")  # Modified
         # key2 is removed
         
-        # Test diff functionality
-        # Note: The basic ProllyTree doesn't expose a diff method,
-        # but the nodes are in S3 and can be compared via root hashes
+        # Compare via root hashes - this is the primary way to compare trees
         hash1 = tree1.get_root_hash()
         hash2 = tree2.get_root_hash()
         
         # Trees should have different root hashes
         assert hash1 != hash2
+        
+        # The root hash serves as a cryptographic fingerprint of the tree's content
+        # Different content = different hash
+        print(f"Tree 1 hash: {hash1.hex()[:16]}...")
+        print(f"Tree 2 hash: {hash2.hex()[:16]}...")
         
     def test_identical_trees_same_hash(self):
         """Test that identical trees have the same root hash"""
@@ -229,6 +232,43 @@ class TestS3Diff(unittest.TestCase):
         
         # Should have the same root hash (content-addressed)
         assert tree1.get_root_hash() == tree2.get_root_hash()
+        
+    def test_s3_trees_content_addressable(self):
+        """Test that S3 storage enables content-addressable tree comparison"""
+        # Content-addressed storage means:
+        # 1. Same content produces same hash
+        # 2. Hash differences indicate content differences
+        # 3. Hash can serve as a unique identifier for tree state
+        
+        tree = ProllyTree(
+            storage_type="s3",
+            bucket=self.bucket,
+            prefix=self.prefix + "content-test/"
+        )
+        
+        # Get initial hash
+        initial_hash = tree.get_root_hash()
+        
+        # Add data
+        tree.insert(b"key1", b"value1")
+        hash_after_insert = tree.get_root_hash()
+        
+        # Hash should change
+        assert initial_hash != hash_after_insert
+        
+        # Update data
+        tree.update(b"key1", b"value2")
+        hash_after_update = tree.get_root_hash()
+        
+        # Hash should change again
+        assert hash_after_insert != hash_after_update
+        
+        # Delete data
+        tree.delete(b"key1")
+        hash_after_delete = tree.get_root_hash()
+        
+        # Should return to initial state (empty tree)
+        assert hash_after_delete == initial_hash
 
 
 if __name__ == "__main__":

@@ -166,6 +166,8 @@ tree = ProllyTree(
 
 ### Comparing Trees
 
+Trees can be compared using their cryptographic root hashes, which serve as content fingerprints:
+
 ```python
 # Create two trees
 tree1 = ProllyTree(storage_type="s3", bucket="my-bucket", prefix="tree1/")
@@ -182,6 +184,11 @@ if tree1.get_root_hash() == tree2.get_root_hash():
 else:
     print("Trees differ")
 ```
+
+**Note:** The basic ProllyTree provides hash-based comparison. For detailed diff operations 
+(added/removed/modified keys), use the `VersionedKvStore` which provides Git-like versioning 
+and diff functionality. The S3 storage backend works seamlessly with VersionedKvStore for 
+version-controlled, diffable key-value storage in S3.
 
 ## Storage Structure
 
