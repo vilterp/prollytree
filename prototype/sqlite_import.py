@@ -37,7 +37,7 @@ def get_primary_key(cursor, table_name):
     # If no primary key, use rowid
     return "rowid"
 
-def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:'):
+def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:', cache_size=None):
     """
     Import all tables from SQLite into ProllyTree.
 
@@ -59,7 +59,9 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
 
     # Initialize ProllyTree with specified store
     print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed}, store={store_spec})")
-    store = create_store_from_spec(store_spec)
+    if cache_size:
+        print(f"  Cache size: {cache_size}")
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
     tree = ProllyTree(pattern=pattern, seed=seed, store=store)
 
     total_rows = 0
@@ -162,6 +164,14 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
     print(f"  Store type: {type(tree.store).__name__}")
     print(f"  Total nodes in storage: {tree.store.count_nodes():,}")
 
+    # Show cache stats if using CachedFSStore
+    from store import CachedFSStore
+    if isinstance(tree.store, CachedFSStore):
+        stats = tree.store.get_cache_stats()
+        print(f"\nCache statistics:")
+        for key, value in stats.items():
+            print(f"  {key}: {value}")
+
     # Verify we can read some data
     print(f"\nVerifying data...")
     result = tree.verify()
@@ -200,9 +210,11 @@ Examples:
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for rolling hash (default: 42)')
     parser.add_argument('--store', default=':memory:',
-                        help='Store spec: :memory:, file:///path, or s3://bucket (default: :memory:)')
+                        help='Store spec: :memory:, file:///path, cached-file:///path, or s3://bucket (default: :memory:)')
     parser.add_argument('--batch-size', type=int, default=1000,
                         help='Batch size for inserts (default: 1000)')
+    parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores (default: 1000)')
 
     args = parser.parse_args()
 
@@ -211,5 +223,6 @@ Examples:
         pattern=args.pattern,
         seed=args.seed,
         batch_size=args.batch_size,
-        store_spec=args.store
+        store_spec=args.store,
+        cache_size=args.cache_size
     )

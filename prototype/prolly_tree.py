@@ -18,7 +18,7 @@ New code should import directly from tree and store modules.
 """
 
 # Re-export everything from store and tree
-from store import Node, Store, MemoryStore, FileSystemStore, create_store_from_spec
+from store import Node, Store, MemoryStore, FileSystemStore, CachedFSStore, create_store_from_spec
 from tree import ProllyTree
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     'Store',
     'MemoryStore',
     'FileSystemStore',
+    'CachedFSStore',
     'create_store_from_spec',
     'ProllyTree',
 ]

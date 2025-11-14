@@ -1,46 +1,106 @@
-# ProllyTree Incremental Batch Insert Prototype
+# ProllyTree Python Prototype
 
-This directory contains a simplified Python prototype to understand and verify the incremental batch insert algorithm before implementing it in Rust.
+A Python implementation of ProllyTree with pluggable storage backends.
+
+## File Organization
+
+- **`store.py`** - Storage protocol and implementations
+  - `Store` - Protocol defining storage interface
+  - `Node` - Tree node class
+  - `MemoryStore` - In-memory storage implementation
+  - `FileSystemStore` - Filesystem-based persistent storage
+  - `create_store_from_spec()` - Create store from spec string
+
+- **`tree.py`** - Core ProllyTree implementation
+  - `ProllyTree` - Main tree class with rolling hash-based splitting
+  - Incremental batch insert with subtree reuse
+  - Content-addressed nodes
+
+- **`test_tree.py`** - Test suite
+  - Basic tests for tree operations
+  - Subtree reuse verification
+
+- **`sqlite_import.py`** - SQLite database import tool
+  - Import SQLite databases to ProllyTree
+  - Configurable storage backend
+  - Progress tracking
+
+- **`prolly_tree.py`** - Compatibility layer (re-exports from other modules)
+
+## Usage
+
+### Basic Usage
+
+```python
+from tree import ProllyTree
+from store import MemoryStore, FileSystemStore
+
+# In-memory tree
+tree = ProllyTree(pattern=0.0001, seed=42)
+tree.insert_batch([(1, 'a'), (2, 'b'), (3, 'c')], verbose=False)
+result = tree.verify()
+
+# Filesystem-backed tree
+store = FileSystemStore('/tmp/my_tree')
+tree = ProllyTree(pattern=0.0001, seed=42, store=store)
+tree.insert_batch([(1, 'a'), (2, 'b')], verbose=False)
+```
+
+### SQLite Import
+
+```bash
+# Import to memory
+python sqlite_import.py database.sqlite
+
+# Import to filesystem
+python sqlite_import.py database.sqlite --store file:///tmp/prolly_data
+
+# Custom parameters
+python sqlite_import.py database.sqlite --pattern 0.0001 --seed 42 --batch-size 1000
+```
+
+### Running Tests
+
+```bash
+python test_tree.py
+```
+
+## Store Specifications
+
+The `create_store_from_spec()` function accepts these formats:
+
+- `:memory:` - In-memory storage (default)
+- `file:///path/to/dir` - Filesystem storage
+- `s3://bucket-name` - S3 storage (not yet implemented)
 
 ## Key Concepts
 
-The prototype demonstrates **DoltDB-style incremental batch insert** with node reuse:
+### Rolling Hash
 
-1. **Range-based partitioning**: Mutations are partitioned to child subtrees based on separator keys
-2. **Selective traversal**: Only subtrees affected by mutations are traversed and rebuilt
-3. **Subtree reuse**: Unchanged subtrees are reused by keeping their hash pointers (no traversal!)
+The tree uses a rolling hash (Rabin fingerprinting) for deterministic, content-based node splitting. The hash accumulates over all data in a node, and when it falls below the pattern threshold, the node is split.
 
-## Simplifications
+### Content Addressing
 
-- Fixed-size nodes (max 4 keys) instead of content-defined splitting
-- No rolling hash (just split when full)
-- Simplified storage (in-memory dict)
+Nodes are identified by the SHA-256 hash of their contents. This enables:
+- Structural sharing between tree versions
+- Deduplication of identical nodes
+- Efficient incremental updates
 
-## Running the Tests
+### Incremental Batch Insert
 
-```bash
-python3 prolly_tree.py
-```
+When inserting a batch of mutations:
+1. Partition mutations by subtree ranges
+2. Recursively rebuild only affected subtrees
+3. Reuse unchanged subtrees by reference
 
-## Expected Results
+This provides O(k log n) performance where k is the number of mutations, rather than O(n) for a full rebuild.
 
-- **Test 1**: Empty tree insert - creates 3 nodes (2 leaves + 1 parent), 0 reused
-- **Test 2**: Interleaved keys - affects both children, 0 subtrees reused
-- **Test 3**: Keys in one range - affects only right child, **1 subtree reused** ✓
+## Performance
 
-## Key Insight
+Based on testing with BC00ALL-26SP.sqlite (398,458 rows):
+- Initial inserts: ~15,000 rows/sec
+- Later inserts: ~2,500-3,000 rows/sec (as tree grows)
+- Total nodes created: ~414 for 400k entries
+- Pattern 0.0001 results in larger nodes (~1000 entries each)
 
-When inserting keys 13-16 (Test 3), the left subtree (keys 1-9) is **completely unchanged**. The algorithm:
-1. Detects no mutations fall in left child's range
-2. **Reuses the existing child hash pointer directly**
-3. Never reads or traverses the left subtree
-4. Only rebuilds the affected right subtree
-
-This is O(M log N) instead of O(N) because we skip entire unchanged subtrees!
-
-## Next Step
-
-Port this logic to Rust in `src/node.rs`, ensuring:
-- Properly handle content-defined splitting (rolling hash)
-- Handle case where rebuilt children split into multiple nodes
-- Update parent separator keys when child structure changes
+Performance degrades as the tree grows (expected for Python implementation). The Rust version would be significantly faster.
