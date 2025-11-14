@@ -58,15 +58,19 @@ class ProllyTree:
         """Reset operation tracking for a new batch"""
         self.ops = []
 
-    def _rolling_hash(self, data):
+    def _rolling_hash(self, current_hash, data):
         """
         Simple rolling hash (Rabin fingerprinting style).
-        Returns a uint32 hash value.
+        Updates the hash with new data.
 
         Args:
-            data: bytes-like object to hash
+            current_hash: Current hash value (use self.seed for initial)
+            data: bytes-like object to add to the hash
+
+        Returns:
+            Updated hash value (uint32)
         """
-        h = self.seed
+        h = current_hash
         for byte in data:
             h = ((h * 31) + byte) & 0xFFFFFFFF
         return h
@@ -269,6 +273,7 @@ class ProllyTree:
         # Strategy: Don't split unless we have at least 2 children on BOTH sides
         internal_nodes = []
         current_internal = Node(is_leaf=False)
+        roll_hash = self.seed  # Start with seed
 
         for i, child in enumerate(children):
             # Store or reuse child hash
@@ -280,6 +285,10 @@ class ProllyTree:
 
             current_internal.values.append(child_hash)
 
+            # Update rolling hash with the child hash
+            hash_bytes = str(child_hash).encode('utf-8')
+            roll_hash = self._rolling_hash(roll_hash, hash_bytes)
+
             # Add separator key (first key of next child)
             if i < len(children) - 1:
                 next_child = children[i + 1]
@@ -288,13 +297,14 @@ class ProllyTree:
                     separator = next_child.keys[0]
                     current_internal.keys.append(separator)
 
+                    # Update rolling hash with separator key
+                    sep_bytes = str(separator).encode('utf-8')
+                    roll_hash = self._rolling_hash(roll_hash, sep_bytes)
+
                     # Check if we should split here using rolling hash
                     # Require:
                     # - At least 2 children in current node
                     # - At least 2 children remaining (including next)
-                    sep_bytes = str(separator).encode('utf-8')
-                    roll_hash = self._rolling_hash(sep_bytes)
-
                     MIN_CHILDREN = 2
                     children_remaining = len(children) - i - 1
                     if (roll_hash < self.pattern and
@@ -303,6 +313,7 @@ class ProllyTree:
                         # Split point! Save current internal and start new one
                         internal_nodes.append(current_internal)
                         current_internal = Node(is_leaf=False)
+                        roll_hash = self.seed  # Reset hash for next node
                         if verbose:
                             print(f"  -> Internal node split at separator {separator} (hash={roll_hash} < {self.pattern})")
                 else:
@@ -381,14 +392,17 @@ class ProllyTree:
         leaves = []
         current_keys = []
         current_values = []
+        roll_hash = self.seed  # Start with seed
 
         for i, (key, value) in enumerate(items):
             current_keys.append(key)
             current_values.append(value)
 
-            # Compute rolling hash of the current key
+            # Update rolling hash with the key and value bytes
             key_bytes = str(key).encode('utf-8')
-            roll_hash = self._rolling_hash(key_bytes)
+            value_bytes = str(value).encode('utf-8')
+            roll_hash = self._rolling_hash(roll_hash, key_bytes)
+            roll_hash = self._rolling_hash(roll_hash, value_bytes)
 
             # Split if: (1) have minimum entries AND hash below pattern OR (2) last item
             has_min = len(current_keys) >= MIN_NODE_SIZE
@@ -403,6 +417,7 @@ class ProllyTree:
                 # Reset for next leaf
                 current_keys = []
                 current_values = []
+                roll_hash = self.seed  # Reset hash for next node
 
         return leaves if leaves else [Node(is_leaf=True)]
 
