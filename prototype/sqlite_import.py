@@ -21,7 +21,8 @@ import json
 import time
 import sys
 import argparse
-from prolly_tree import ProllyTree, create_store_from_spec
+from tree import ProllyTree
+from store import create_store_from_spec
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
