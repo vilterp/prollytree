@@ -12,25 +12,27 @@
 # limitations under the License.
 
 """
-SQLite to S3-backed ProllyTree Import Script
+SQLite to S3-backed ProllyTree Tool
 
-Reads tables from a SQLite database and imports them into an S3-backed ProllyTree.
-Data is encoded as: /<table>/<primary_key> => [col1, col2, col3, ...]
-
-The script persists all data to S3 and outputs the root hash, which can be used
-to restore the tree in a later session using TreeConfig(root_hash=...).
+Subcommands:
+  import  - Import SQLite database into S3-backed ProllyTree
+  dump    - Dump ProllyTree contents to stdout
 
 Usage:
-    python sqlite_to_s3_prolly.py <sqlite_db_path> <s3_bucket> [--endpoint-url URL] [--batch-size N]
+    # Import SQLite to ProllyTree (prints root hash after each batch)
+    python sqlite_to_s3_prolly.py import <sqlite_db> <s3_bucket> [options]
 
-Example:
-    # With LocalStack
-    python sqlite_to_s3_prolly.py mydata.db prollytree-test --endpoint-url http://127.0.0.1:4566 --batch-size 1000
+    # Dump ProllyTree contents
+    python sqlite_to_s3_prolly.py dump <s3_bucket> <root_hash> [options]
 
-    # With real S3
-    python sqlite_to_s3_prolly.py mydata.db my-bucket --batch-size 1000
+Examples:
+    # Import with LocalStack
+    python sqlite_to_s3_prolly.py import mydata.db bucket \
+        --endpoint-url http://127.0.0.1:4566 --batch-size 1000
 
-After import, use the printed instructions to restore the tree in another session.
+    # Dump from specific root hash
+    python sqlite_to_s3_prolly.py dump bucket b87221ff... \
+        --endpoint-url http://127.0.0.1:4566
 """
 
 import argparse
@@ -41,6 +43,34 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from prollytree import ProllyTree, S3Config, TreeConfig
+
+
+def normalize_endpoint_url(endpoint_url: str) -> str:
+    """Normalize endpoint URL - replace localhost with 127.0.0.1 for AWS SDK."""
+    if endpoint_url and 'localhost' in endpoint_url:
+        return endpoint_url.replace('localhost', '127.0.0.1')
+    return endpoint_url
+
+
+def create_s3_config(bucket: str, endpoint_url: str, region: str) -> S3Config:
+    """Create S3Config with normalized endpoint."""
+    normalized_url = normalize_endpoint_url(endpoint_url) if endpoint_url else None
+    return S3Config(
+        bucket=bucket,
+        prefix="sqlite-import/",
+        region=region,
+        endpoint_url=normalized_url,
+        cache_size=10000
+    )
+
+
+def create_tree_config() -> TreeConfig:
+    """Create S3-optimized TreeConfig with very large nodes (~1MB target)."""
+    return TreeConfig(
+        min_chunk_size=1000,      # Minimum 1000 entries per node
+        max_chunk_size=10_000_000, # 10MB max node size
+        pattern=0xFFFFFF           # Very large pattern = rare splits = large nodes
+    )
 
 
 def get_table_info(cursor: sqlite3.Cursor, table_name: str) -> Dict[str, Any]:
@@ -140,11 +170,37 @@ def import_table(
         if batch:
             # Convert to bytes for ProllyTree
             byte_batch = [(k.encode('utf-8'), v.encode('utf-8')) for k, v in batch]
+
+            # Get root hash before insertion
+            old_root_hash = tree.get_root_hash().hex()
+
+            # Insert batch
             tree.insert_batch(byte_batch)
+
+            # Get new root hash and verify it changed
+            new_root_hash = tree.get_root_hash().hex()
+
+            # If root hash didn't change but we inserted data, something went wrong
+            if new_root_hash == old_root_hash and len(byte_batch) > 0:
+                raise RuntimeError(
+                    f"Failed to insert batch: root hash unchanged after inserting {len(byte_batch)} entries. "
+                    f"This likely indicates an S3 write failure. Check stderr for error messages."
+                )
+
+            # Verify we can read back at least the first key from this batch
+            first_key = byte_batch[0][0]
+            verification = tree.find(first_key)
+            if verification is None:
+                raise RuntimeError(
+                    f"Failed to verify batch insertion: could not read back key {first_key.decode('utf-8', errors='replace')}. "
+                    f"This indicates data was not successfully persisted to S3."
+                )
+
             total_rows += len(batch)
 
+            # Print root hash after each batch
             if verbose:
-                print(f"  Inserted {total_rows} rows...", end="\r")
+                print(f"  Inserted {total_rows} rows... Root: {new_root_hash[:16]}...")
 
             batch = []
 
@@ -154,41 +210,8 @@ def import_table(
     return total_rows
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Import SQLite database into S3-backed ProllyTree"
-    )
-    parser.add_argument("sqlite_db", help="Path to SQLite database file")
-    parser.add_argument("s3_bucket", help="S3 bucket name")
-    parser.add_argument(
-        "--endpoint-url",
-        help="S3 endpoint URL (for LocalStack or S3-compatible services)",
-        default=None
-    )
-    parser.add_argument(
-        "--region",
-        help="AWS region (default: us-east-1)",
-        default="us-east-1"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        help="Number of rows to insert per batch (default: 1000)",
-        default=1000
-    )
-    parser.add_argument(
-        "--tables",
-        nargs="+",
-        help="Specific tables to import (default: all tables)",
-        default=None
-    )
-    parser.add_argument(
-        "--quiet",
-        action="store_true",
-        help="Suppress progress output"
-    )
-
-    args = parser.parse_args()
+def cmd_import(args):
+    """Import SQLite database into S3-backed ProllyTree."""
 
     # Validate SQLite database exists
     if not Path(args.sqlite_db).exists():
@@ -222,35 +245,12 @@ def main():
         print(f"  Region: {args.region}")
         if args.endpoint_url:
             print(f"  Endpoint: {args.endpoint_url}")
-
-    # Normalize endpoint URL - replace localhost with 127.0.0.1
-    # The AWS SDK has issues resolving localhost
-    endpoint_url = args.endpoint_url
-    if endpoint_url and 'localhost' in endpoint_url:
-        endpoint_url = endpoint_url.replace('localhost', '127.0.0.1')
-        if not args.quiet:
-            print(f"  Note: Normalized localhost to 127.0.0.1")
-
-    s3_config = S3Config(
-        bucket=args.s3_bucket,
-        prefix="sqlite-import/",
-        region=args.region,
-        endpoint_url=endpoint_url,
-        cache_size=10000
-    )
-
-    # Use S3-optimized TreeConfig with very large nodes (~1MB target)
-    # Pattern of 0xFFFFFF (16777215) means ~1 in 16 million chance of split per entry
-    # This creates much larger nodes suitable for high-latency storage like S3
-    tree_config = TreeConfig(
-        min_chunk_size=1000,      # Minimum 1000 entries per node
-        max_chunk_size=10_000_000, # 10MB max node size
-        pattern=0xFFFFFF           # Very large pattern = rare splits = large nodes
-    )
-
-    if not args.quiet:
+            if 'localhost' in args.endpoint_url:
+                print(f"  Note: Will normalize localhost to 127.0.0.1")
         print(f"  Using S3-optimized config: min_size=1000, max_size=10MB, pattern=0xFFFFFF")
 
+    s3_config = create_s3_config(args.s3_bucket, args.endpoint_url, args.region)
+    tree_config = create_tree_config()
     tree = ProllyTree(storage_type="s3", s3_config=s3_config, config=tree_config)
 
     # Import each table
@@ -281,17 +281,136 @@ def main():
         print(f"\n{'='*60}")
         print(f"Import complete!")
         print(f"  Total rows imported: {total_rows}")
-        print(f"  Root hash: {root_hash_hex}")
+        print(f"  Final root hash: {root_hash_hex}")
         print(f"")
-        print(f"To access this data later, use:")
-        print(f"  from prollytree import ProllyTree, S3Config, TreeConfig")
-        print(f"  s3_config = S3Config(bucket='{args.s3_bucket}', prefix='sqlite-import/', \\")
-        print(f"                       region='{args.region}', endpoint_url={repr(args.endpoint_url)})")
-        print(f"  config = TreeConfig(root_hash=bytes.fromhex('{root_hash_hex}'))")
-        print(f"  tree = ProllyTree(storage_type='s3', s3_config=s3_config, config=config)")
+        print(f"To dump this data, use:")
+        print(f"  python {sys.argv[0]} dump {args.s3_bucket} {root_hash_hex} \\")
+        print(f"    --endpoint-url {args.endpoint_url or 'https://s3.amazonaws.com'}")
         print(f"{'='*60}")
+    else:
+        # In quiet mode, just print the root hash for piping
+        print(root_hash_hex)
 
     return 0
+
+
+def cmd_dump(args):
+    """Dump ProllyTree contents to stdout."""
+
+    if not args.quiet:
+        print(f"Loading ProllyTree from S3...", file=sys.stderr)
+        print(f"  Bucket: {args.s3_bucket}", file=sys.stderr)
+        print(f"  Root hash: {args.root_hash}", file=sys.stderr)
+        if args.endpoint_url:
+            print(f"  Endpoint: {args.endpoint_url}", file=sys.stderr)
+
+    # Parse root hash
+    try:
+        root_hash_bytes = bytes.fromhex(args.root_hash)
+        if len(root_hash_bytes) != 32:
+            print(f"Error: Root hash must be 32 bytes (64 hex characters)", file=sys.stderr)
+            sys.exit(1)
+    except ValueError as e:
+        print(f"Error: Invalid hex string for root hash: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Create S3-backed ProllyTree with root hash
+    s3_config = create_s3_config(args.s3_bucket, args.endpoint_url, args.region)
+    tree_config = TreeConfig(root_hash=root_hash_bytes)
+    tree = ProllyTree(storage_type="s3", s3_config=s3_config, config=tree_config)
+
+    if not args.quiet:
+        print(f"  Tree size: {tree.size()} entries", file=sys.stderr)
+        print(f"  Dumping to stdout...", file=sys.stderr)
+        print("", file=sys.stderr)
+
+    # Traverse tree and dump all key-value pairs
+    def visitor(key: bytes, value: bytes):
+        try:
+            key_str = key.decode('utf-8')
+            value_str = value.decode('utf-8')
+
+            # Output as JSON lines (one object per line)
+            output = json.dumps({"key": key_str, "value": json.loads(value_str)})
+            print(output)
+        except Exception as e:
+            if not args.quiet:
+                print(f"Warning: Could not decode entry: {e}", file=sys.stderr)
+
+    tree.traverse(visitor)
+
+    if not args.quiet:
+        print(f"\nDump complete!", file=sys.stderr)
+
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="SQLite to S3-backed ProllyTree Tool",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Subcommand to run')
+    subparsers.required = True
+
+    # Import subcommand
+    import_parser = subparsers.add_parser('import', help='Import SQLite database to ProllyTree')
+    import_parser.add_argument("sqlite_db", help="Path to SQLite database file")
+    import_parser.add_argument("s3_bucket", help="S3 bucket name")
+    import_parser.add_argument(
+        "--endpoint-url",
+        help="S3 endpoint URL (for LocalStack or S3-compatible services)",
+        default=None
+    )
+    import_parser.add_argument(
+        "--region",
+        help="AWS region (default: us-east-1)",
+        default="us-east-1"
+    )
+    import_parser.add_argument(
+        "--batch-size",
+        type=int,
+        help="Number of rows to insert per batch (default: 1000)",
+        default=1000
+    )
+    import_parser.add_argument(
+        "--tables",
+        nargs="+",
+        help="Specific tables to import (default: all tables)",
+        default=None
+    )
+    import_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress progress output (only print final root hash)"
+    )
+    import_parser.set_defaults(func=cmd_import)
+
+    # Dump subcommand
+    dump_parser = subparsers.add_parser('dump', help='Dump ProllyTree contents to stdout')
+    dump_parser.add_argument("s3_bucket", help="S3 bucket name")
+    dump_parser.add_argument("root_hash", help="Root hash (64 hex characters)")
+    dump_parser.add_argument(
+        "--endpoint-url",
+        help="S3 endpoint URL (for LocalStack or S3-compatible services)",
+        default=None
+    )
+    dump_parser.add_argument(
+        "--region",
+        help="AWS region (default: us-east-1)",
+        default="us-east-1"
+    )
+    dump_parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Suppress informational output (stderr)"
+    )
+    dump_parser.set_defaults(func=cmd_dump)
+
+    args = parser.parse_args()
+    return args.func(args)
 
 
 if __name__ == "__main__":
