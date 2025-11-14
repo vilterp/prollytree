@@ -131,12 +131,12 @@ fn import_table(
 
     let mut rows_iter = stmt.query([])?;
     let mut total_rows = 0;
-    let mut all_keys = Vec::new();
-    let mut all_values = Vec::new();
+    let mut batch_keys = Vec::new();
+    let mut batch_values = Vec::new();
 
     let batch_start = Instant::now();
 
-    // Collect ALL rows for this table first
+    // Stream rows in batches
     while let Some(row) = rows_iter.next()? {
         // Build row data map
         let mut row_data = HashMap::new();
@@ -162,41 +162,61 @@ fn import_table(
             .collect();
         let value = format!("[{}]", value_list.join(","));
 
-        all_keys.push(key.into_bytes());
-        all_values.push(value.into_bytes());
+        batch_keys.push(key.into_bytes());
+        batch_values.push(value.into_bytes());
 
-        // Print progress every batch_size rows
-        if verbose && all_keys.len() % batch_size == 0 {
-            let elapsed = batch_start.elapsed();
-            let rate = all_keys.len() as f64 / elapsed.as_secs_f64();
-            println!("  Read {} rows... ({:.1} rows/sec)", all_keys.len(), rate);
+        // Insert batch when we reach batch_size
+        if batch_keys.len() >= batch_size {
+            let insert_start = Instant::now();
+            tree.insert_batch(&batch_keys, &batch_values);
+            let insert_elapsed = insert_start.elapsed();
+
+            total_rows += batch_keys.len();
+
+            if verbose {
+                let elapsed = batch_start.elapsed();
+                let overall_rate = total_rows as f64 / elapsed.as_secs_f64();
+                let batch_rate = batch_keys.len() as f64 / insert_elapsed.as_secs_f64();
+                println!(
+                    "  Inserted batch of {} rows ({:.1} rows/sec) | Total: {} ({:.1} rows/sec)",
+                    batch_keys.len(), batch_rate, total_rows, overall_rate
+                );
+            }
+
+            batch_keys.clear();
+            batch_values.clear();
         }
     }
 
-    // Insert all rows at once using optimized batch insert
-    if !all_keys.is_empty() {
-        if verbose {
-            println!("  Inserting {} rows into tree...", all_keys.len());
-        }
+    // Insert remaining rows
+    if !batch_keys.is_empty() {
         let insert_start = Instant::now();
-        tree.insert_batch(&all_keys, &all_values);
-        total_rows = all_keys.len();
+        tree.insert_batch(&batch_keys, &batch_values);
         let insert_elapsed = insert_start.elapsed();
-        let insert_rate = total_rows as f64 / insert_elapsed.as_secs_f64();
+
+        total_rows += batch_keys.len();
 
         if verbose {
-            let root_hash = tree.get_root_hash().unwrap_or_default();
+            let elapsed = batch_start.elapsed();
+            let overall_rate = total_rows as f64 / elapsed.as_secs_f64();
+            let batch_rate = batch_keys.len() as f64 / insert_elapsed.as_secs_f64();
             println!(
-                "  Inserted {} rows in {:.2}s ({:.1} rows/sec) Root: {:02x}{:02x}{:02x}{:02x}...",
-                total_rows,
-                insert_elapsed.as_secs_f64(),
-                insert_rate,
-                root_hash.0[0],
-                root_hash.0[1],
-                root_hash.0[2],
-                root_hash.0[3]
+                "  Inserted final batch of {} rows ({:.1} rows/sec) | Total: {} ({:.1} rows/sec)",
+                batch_keys.len(), batch_rate, total_rows, overall_rate
             );
         }
+    }
+
+    if verbose && total_rows > 0 {
+        let root_hash = tree.get_root_hash().unwrap_or_default();
+        println!(
+            "  Completed table with {} total rows. Root: {:02x}{:02x}{:02x}{:02x}...",
+            total_rows,
+            root_hash.0[0],
+            root_hash.0[1],
+            root_hash.0[2],
+            root_hash.0[3]
+        );
     }
 
     Ok(total_rows)
