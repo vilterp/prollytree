@@ -112,6 +112,140 @@ enum ProllyTreeWrapper {
     S3(ProllyTree<32, S3NodeStorage<32>>),
 }
 
+/// Represents a key-value pair that was added in the diff
+#[pyclass(name = "Added")]
+#[derive(Clone)]
+struct PyAdded {
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
+#[pymethods]
+impl PyAdded {
+    #[getter]
+    fn key(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.key).into())
+    }
+
+    #[getter]
+    fn value(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.value).into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Added(key={:?}, value={:?})",
+            String::from_utf8_lossy(&self.key),
+            String::from_utf8_lossy(&self.value)
+        )
+    }
+}
+
+/// Represents a key-value pair that was removed in the diff
+#[pyclass(name = "Removed")]
+#[derive(Clone)]
+struct PyRemoved {
+    key: Vec<u8>,
+    value: Vec<u8>,
+}
+
+#[pymethods]
+impl PyRemoved {
+    #[getter]
+    fn key(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.key).into())
+    }
+
+    #[getter]
+    fn value(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.value).into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Removed(key={:?}, value={:?})",
+            String::from_utf8_lossy(&self.key),
+            String::from_utf8_lossy(&self.value)
+        )
+    }
+}
+
+/// Represents a key-value pair that was changed in the diff
+#[pyclass(name = "Changed")]
+#[derive(Clone)]
+struct PyChanged {
+    key: Vec<u8>,
+    old_value: Vec<u8>,
+    new_value: Vec<u8>,
+}
+
+#[pymethods]
+impl PyChanged {
+    #[getter]
+    fn key(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.key).into())
+    }
+
+    #[getter]
+    fn old_value(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.old_value).into())
+    }
+
+    #[getter]
+    fn new_value(&self, py: Python) -> PyResult<Py<PyBytes>> {
+        Ok(PyBytes::new_bound(py, &self.new_value).into())
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Changed(key={:?}, old_value={:?}, new_value={:?})",
+            String::from_utf8_lossy(&self.key),
+            String::from_utf8_lossy(&self.old_value),
+            String::from_utf8_lossy(&self.new_value)
+        )
+    }
+}
+
+/// Represents the complete diff between two trees
+#[pyclass(name = "Diff")]
+#[derive(Clone)]
+struct PyDiff {
+    added: Vec<PyAdded>,
+    removed: Vec<PyRemoved>,
+    changed: Vec<PyChanged>,
+}
+
+#[pymethods]
+impl PyDiff {
+    #[getter]
+    fn added(&self) -> Vec<PyAdded> {
+        self.added.clone()
+    }
+
+    #[getter]
+    fn removed(&self) -> Vec<PyRemoved> {
+        self.removed.clone()
+    }
+
+    #[getter]
+    fn changed(&self) -> Vec<PyChanged> {
+        self.changed.clone()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "Diff(added={}, removed={}, changed={})",
+            self.added.len(),
+            self.removed.len(),
+            self.changed.len()
+        )
+    }
+
+    fn __len__(&self) -> usize {
+        self.added.len() + self.removed.len() + self.changed.len()
+    }
+}
+
 macro_rules! with_tree {
     ($self:expr, $tree:ident, $body:expr) => {
         match &*$self {
@@ -410,7 +544,7 @@ impl PyProllyTree {
         })
     }
 
-    fn diff(&self, py: Python, other: &PyProllyTree) -> PyResult<Py<PyList>> {
+    fn diff(&self, py: Python, other: &PyProllyTree) -> PyResult<PyDiff> {
         // Use the tree's native diff implementation when both have the same storage type
         py.allow_threads(|| {
             let self_tree = self.tree.lock().unwrap();
@@ -431,41 +565,38 @@ impl PyProllyTree {
                 _ => {
                     return Err(PyValueError::new_err(
                         "Cannot diff trees with different storage backends. \
-                         Both trees must use the same storage type (memory, file, or s3)."
+                         Both trees must use the same storage type (memory, file, or s3).",
                     ));
                 }
             };
 
-            // Convert DiffResults to Python list of dictionaries
-            Python::with_gil(|py| {
-                let result_list = PyList::empty_bound(py);
+            // Convert DiffResults to PyDiff with separate lists
+            let mut added = Vec::new();
+            let mut removed = Vec::new();
+            let mut changed = Vec::new();
 
-                for diff_result in diff_results {
-                    let dict = PyDict::new_bound(py);
-
-                    match diff_result {
-                        crate::diff::DiffResult::Added(key, value) => {
-                            dict.set_item("type", "added")?;
-                            dict.set_item("key", PyBytes::new_bound(py, &key))?;
-                            dict.set_item("value", PyBytes::new_bound(py, &value))?;
-                        }
-                        crate::diff::DiffResult::Removed(key, value) => {
-                            dict.set_item("type", "removed")?;
-                            dict.set_item("key", PyBytes::new_bound(py, &key))?;
-                            dict.set_item("value", PyBytes::new_bound(py, &value))?;
-                        }
-                        crate::diff::DiffResult::Modified(key, old_value, new_value) => {
-                            dict.set_item("type", "modified")?;
-                            dict.set_item("key", PyBytes::new_bound(py, &key))?;
-                            dict.set_item("old_value", PyBytes::new_bound(py, &old_value))?;
-                            dict.set_item("new_value", PyBytes::new_bound(py, &new_value))?;
-                        }
+            for diff_result in diff_results {
+                match diff_result {
+                    crate::diff::DiffResult::Added(key, value) => {
+                        added.push(PyAdded { key, value });
                     }
-
-                    result_list.append(dict)?;
+                    crate::diff::DiffResult::Removed(key, value) => {
+                        removed.push(PyRemoved { key, value });
+                    }
+                    crate::diff::DiffResult::Modified(key, old_value, new_value) => {
+                        changed.push(PyChanged {
+                            key,
+                            old_value,
+                            new_value,
+                        });
+                    }
                 }
+            }
 
-                Ok(result_list.into())
+            Ok(PyDiff {
+                added,
+                removed,
+                changed,
             })
         })
     }
@@ -2125,6 +2256,10 @@ fn prollytree(m: &Bound<'_, PyModule>) -> PyResult<()> {
     #[cfg(feature = "s3_storage")]
     m.add_class::<PyS3Config>()?;
     m.add_class::<PyProllyTree>()?;
+    m.add_class::<PyAdded>()?;
+    m.add_class::<PyRemoved>()?;
+    m.add_class::<PyChanged>()?;
+    m.add_class::<PyDiff>()?;
     m.add_class::<PyMemoryType>()?;
     m.add_class::<PyAgentMemorySystem>()?;
     m.add_class::<PyStorageBackend>()?;

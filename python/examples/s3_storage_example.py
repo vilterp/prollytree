@@ -141,23 +141,37 @@ def main():
     print("\nComputing diff between production and staging...")
     diff = tree_prod.diff(tree_staging)
 
-    print(f"\nFound {len(diff)} differences:")
-    for i, change in enumerate(diff, 1):
-        change_type = change["type"]
-        key = change["key"].decode('utf-8', errors='replace')
+    total_changes = len(diff.added) + len(diff.removed) + len(diff.changed)
+    print(f"\nFound {total_changes} differences:")
+    print(f"  - {len(diff.added)} added")
+    print(f"  - {len(diff.removed)} removed")
+    print(f"  - {len(diff.changed)} changed")
 
-        if change_type == "added":
-            value = change["value"].decode('utf-8', errors='replace')
-            print(f"\n{i}. ADDED: '{key}' = '{value}'")
-        elif change_type == "removed":
-            value = change["value"].decode('utf-8', errors='replace')
-            print(f"\n{i}. REMOVED: '{key}' (was '{value}')")
-        elif change_type == "modified":
-            old_val = change["old_value"].decode('utf-8', errors='replace')
-            new_val = change["new_value"].decode('utf-8', errors='replace')
-            print(f"\n{i}. MODIFIED: '{key}'")
-            print(f"   Old: '{old_val}'")
-            print(f"   New: '{new_val}'")
+    change_num = 1
+
+    # Display removed keys
+    for removed in diff.removed:
+        key = removed.key.decode('utf-8', errors='replace')
+        value = removed.value.decode('utf-8', errors='replace')
+        print(f"\n{change_num}. REMOVED: '{key}' (was '{value}')")
+        change_num += 1
+
+    # Display added keys
+    for added in diff.added:
+        key = added.key.decode('utf-8', errors='replace')
+        value = added.value.decode('utf-8', errors='replace')
+        print(f"\n{change_num}. ADDED: '{key}' = '{value}'")
+        change_num += 1
+
+    # Display changed keys
+    for changed in diff.changed:
+        key = changed.key.decode('utf-8', errors='replace')
+        old_val = changed.old_value.decode('utf-8', errors='replace')
+        new_val = changed.new_value.decode('utf-8', errors='replace')
+        print(f"\n{change_num}. MODIFIED: '{key}'")
+        print(f"   Old: '{old_val}'")
+        print(f"   New: '{new_val}'")
+        change_num += 1
 
     print()
 

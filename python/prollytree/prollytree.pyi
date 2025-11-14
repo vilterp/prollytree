@@ -2,6 +2,68 @@
 
 from typing import Optional, Dict, List, Tuple, Union
 
+class Added:
+    """Represents a key-value pair that was added in a diff."""
+
+    @property
+    def key(self) -> bytes:
+        """The key that was added."""
+        ...
+
+    @property
+    def value(self) -> bytes:
+        """The value that was added."""
+        ...
+
+class Removed:
+    """Represents a key-value pair that was removed in a diff."""
+
+    @property
+    def key(self) -> bytes:
+        """The key that was removed."""
+        ...
+
+    @property
+    def value(self) -> bytes:
+        """The value that was removed."""
+        ...
+
+class Changed:
+    """Represents a key-value pair that was modified in a diff."""
+
+    @property
+    def key(self) -> bytes:
+        """The key that was changed."""
+        ...
+
+    @property
+    def old_value(self) -> bytes:
+        """The old value before the change."""
+        ...
+
+    @property
+    def new_value(self) -> bytes:
+        """The new value after the change."""
+        ...
+
+class Diff:
+    """Contains the results of comparing two trees."""
+
+    @property
+    def added(self) -> List[Added]:
+        """List of key-value pairs that were added."""
+        ...
+
+    @property
+    def removed(self) -> List[Removed]:
+        """List of key-value pairs that were removed."""
+        ...
+
+    @property
+    def changed(self) -> List[Changed]:
+        """List of key-value pairs that were modified."""
+        ...
+
 class TreeConfig:
     """Configuration for ProllyTree"""
 
@@ -111,14 +173,17 @@ class ProllyTree:
         """Verify a Merkle proof for a key"""
         ...
 
-    def diff(self, other: "ProllyTree") -> List[Dict[str, Union[str, bytes]]]:
+    def diff(self, other: "ProllyTree") -> Diff:
         """
         Compare two trees and return the differences from this tree to other.
 
-        Returns a list of dictionaries, where each dictionary represents a single change:
-        - For added keys: {"type": "added", "key": bytes, "value": bytes}
-        - For removed keys: {"type": "removed", "key": bytes, "value": bytes}
-        - For modified keys: {"type": "modified", "key": bytes, "old_value": bytes, "new_value": bytes}
+        Returns a Diff object containing three lists:
+        - added: List of Added objects for keys that exist only in the other tree
+        - removed: List of Removed objects for keys that exist only in this tree
+        - changed: List of Changed objects for keys with different values
+
+        Note: Both trees must use the same storage type for efficient structural
+        comparison. Comparing trees with different storage types will raise an error.
 
         Example:
             tree1 = ProllyTree()
@@ -128,12 +193,21 @@ class ProllyTree:
             tree2.insert(b"key1", b"value1_modified")
             tree2.insert(b"key2", b"value2")
 
-            diffs = tree1.diff(tree2)
-            # Returns:
-            # [
-            #   {"type": "added", "key": b"key2", "value": b"value2"},
-            #   {"type": "modified", "key": b"key1", "old_value": b"value1", "new_value": b"value1_modified"}
-            # ]
+            diff = tree1.diff(tree2)
+
+            # Access added keys
+            for added in diff.added:
+                print(f"Added: {added.key} = {added.value}")
+
+            # Access removed keys
+            for removed in diff.removed:
+                print(f"Removed: {removed.key} = {removed.value}")
+
+            # Access changed keys
+            for changed in diff.changed:
+                print(f"Changed: {changed.key}")
+                print(f"  Old: {changed.old_value}")
+                print(f"  New: {changed.new_value}")
         """
         ...
 
