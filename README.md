@@ -11,11 +11,12 @@ A **probabilistic B-tree** implementation in Rust that combines B-tree efficienc
 
 - **High Performance**: O(log n) operations with cache-friendly probabilistic balancing
 - **Cryptographically Verifiable**: Merkle tree properties for data integrity and inclusion proofs
-- **Multiple Storage Backends**: In-memory, RocksDB, and Git-backed persistence
+- **Multiple Storage Backends**: In-memory, RocksDB, Git-backed, and AWS S3 persistence
 - **Distributed-Ready**: Efficient diff, sync, and three-way merge capabilities
 - **Python Bindings**: Full API coverage via PyO3 with async support
 - **SQL Interface**: Query trees with SQL via GlueSQL integration
 - **AI Agent Memory**: Purpose-built for LLM applications and agent systems
+- **Cloud-Native**: S3 storage backend for scalable, distributed tree storage
 
 ## Quick Start
 
@@ -131,8 +132,56 @@ features = [
     "rig",              # Rig framework integration for AI
     "python",           # Python bindings via PyO3
     "rocksdb_storage",  # RocksDB persistent storage backend
+    "s3_storage",       # AWS S3 cloud storage backend
 ]
 ```
+
+### S3 Storage Backend
+
+ProllyTree supports AWS S3 (and S3-compatible services) as a storage backend, enabling cloud-native, scalable tree storage:
+
+```python
+from prollytree import ProllyTree
+
+# Create S3-backed tree
+tree = ProllyTree(
+    storage_type="s3",
+    bucket="my-bucket",
+    prefix="my-app/trees/"
+)
+
+# Use normally
+tree.insert(b"user:1", b"Alice")
+tree.insert(b"user:2", b"Bob")
+
+# Query
+value = tree.find(b"user:1")  # Returns b"Alice"
+
+# Compare trees via cryptographic hashes
+hash1 = tree.get_root_hash()
+```
+
+**Key Benefits:**
+- ✓ Cloud-native persistence and scalability
+- ✓ Content-addressed storage with deduplication
+- ✓ Local LRU caching for performance
+- ✓ Works with MinIO, DigitalOcean Spaces, and other S3-compatible services
+
+**Setup:**
+```bash
+# Build with S3 support
+cd python
+./build_python.sh --features "python s3_storage"
+
+# Configure AWS credentials
+export AWS_REGION=us-east-1
+export AWS_ACCESS_KEY_ID=your_key
+export AWS_SECRET_ACCESS_KEY=your_secret
+
+# Or use ~/.aws/credentials
+```
+
+See [S3 Storage Documentation](docs/S3_STORAGE.md) for complete setup and usage guide.
 
 ## Performance
 
