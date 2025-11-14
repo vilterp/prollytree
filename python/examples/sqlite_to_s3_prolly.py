@@ -40,7 +40,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-from prollytree import ProllyTree, S3Config
+from prollytree import ProllyTree, S3Config, TreeConfig
 
 
 def get_table_info(cursor: sqlite3.Cursor, table_name: str) -> Dict[str, Any]:
@@ -223,15 +223,35 @@ def main():
         if args.endpoint_url:
             print(f"  Endpoint: {args.endpoint_url}")
 
+    # Normalize endpoint URL - replace localhost with 127.0.0.1
+    # The AWS SDK has issues resolving localhost
+    endpoint_url = args.endpoint_url
+    if endpoint_url and 'localhost' in endpoint_url:
+        endpoint_url = endpoint_url.replace('localhost', '127.0.0.1')
+        if not args.quiet:
+            print(f"  Note: Normalized localhost to 127.0.0.1")
+
     s3_config = S3Config(
         bucket=args.s3_bucket,
         prefix="sqlite-import/",
         region=args.region,
-        endpoint_url=args.endpoint_url,
-        cache_size=1000
+        endpoint_url=endpoint_url,
+        cache_size=10000
     )
 
-    tree = ProllyTree(storage_type="s3", s3_config=s3_config)
+    # Use S3-optimized TreeConfig with very large nodes (~1MB target)
+    # Pattern of 0xFFFFFF (16777215) means ~1 in 16 million chance of split per entry
+    # This creates much larger nodes suitable for high-latency storage like S3
+    tree_config = TreeConfig(
+        min_chunk_size=1000,      # Minimum 1000 entries per node
+        max_chunk_size=10_000_000, # 10MB max node size
+        pattern=0xFFFFFF           # Very large pattern = rare splits = large nodes
+    )
+
+    if not args.quiet:
+        print(f"  Using S3-optimized config: min_size=1000, max_size=10MB, pattern=0xFFFFFF")
+
+    tree = ProllyTree(storage_type="s3", s3_config=s3_config, config=tree_config)
 
     # Import each table
     total_rows = 0
