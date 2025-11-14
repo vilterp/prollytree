@@ -766,13 +766,38 @@ impl<const N: usize> Node<N> for ProllyNode<N> {
         storage: &mut S,
         path_hashes: Vec<ValueDigest<N>>,
     ) {
-        // Sort the keys and corresponding values
+        if keys.is_empty() {
+            return;
+        }
+
+        // If we're inserting into a non-empty tree, fall back to individual inserts
+        if !self.keys.is_empty() {
+            let mut key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> =
+                keys.iter().cloned().zip(values.iter().cloned()).collect();
+            key_value_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+            for (key, value) in key_value_pairs {
+                self.insert(key, value, storage, path_hashes.clone());
+            }
+            return;
+        }
+
+        // Optimized path: build tree bottom-up for empty tree
         let mut key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> =
             keys.iter().cloned().zip(values.iter().cloned()).collect();
         key_value_pairs.sort_by(|a, b| a.0.cmp(&b.0));
 
-        for (key, value) in key_value_pairs {
-            self.insert(key, value, storage, path_hashes.clone());
+        let leaf_nodes = self.build_leaf_nodes_streaming(&key_value_pairs, storage);
+
+        if leaf_nodes.is_empty() {
+            return;
+        }
+
+        if leaf_nodes.len() == 1 {
+            *self = leaf_nodes.into_iter().next().unwrap();
+        } else {
+            let root = self.build_parent_levels(leaf_nodes, storage);
+            *self = root;
         }
     }
 
@@ -1025,6 +1050,178 @@ impl<const N: usize> ProllyNode<N> {
 
         // Return the vector of child nodes
         children
+    }
+
+    /// Helper method to build leaf nodes using streaming construction.
+    /// This processes sorted key-value pairs and creates leaf nodes based on rolling hash boundaries.
+    fn build_leaf_nodes_streaming<S: NodeStorage<N>>(
+        &self,
+        key_value_pairs: &[(Vec<u8>, Vec<u8>)],
+        storage: &mut S,
+    ) -> Vec<ProllyNode<N>> {
+        let mut leaf_nodes = Vec::new();
+        let mut current_keys = Vec::new();
+        let mut current_values = Vec::new();
+
+        for (key, value) in key_value_pairs {
+            current_keys.push(key.clone());
+            current_values.push(value.clone());
+
+            if current_keys.len() >= self.min_chunk_size {
+                let window_start = current_keys.len().saturating_sub(self.min_chunk_size);
+                let hash = Self::initialize_rolling_hash(
+                    &current_keys[window_start..],
+                    &current_values[window_start..],
+                    self.base,
+                    self.modulus,
+                );
+
+                if (hash & self.pattern == self.pattern)
+                    || current_keys.len() >= self.max_chunk_size
+                {
+                    let leaf = ProllyNode {
+                        keys: current_keys.clone(),
+                        key_schema: self.key_schema.clone(),
+                        values: current_values.clone(),
+                        value_schema: self.value_schema.clone(),
+                        is_leaf: true,
+                        level: INIT_LEVEL,
+                        base: self.base,
+                        modulus: self.modulus,
+                        min_chunk_size: self.min_chunk_size,
+                        max_chunk_size: self.max_chunk_size,
+                        pattern: self.pattern,
+                        split: false,
+                        merged: false,
+                        encode_types: self.encode_types.clone(),
+                        encode_values: self.encode_values.clone(),
+                    };
+                    let leaf_hash = leaf.get_hash();
+                    storage.insert_node(leaf_hash, leaf.clone());
+                    leaf_nodes.push(leaf);
+                    current_keys.clear();
+                    current_values.clear();
+                }
+            }
+        }
+
+        if !current_keys.is_empty() {
+            let leaf = ProllyNode {
+                keys: current_keys,
+                key_schema: self.key_schema.clone(),
+                values: current_values,
+                value_schema: self.value_schema.clone(),
+                is_leaf: true,
+                level: INIT_LEVEL,
+                base: self.base,
+                modulus: self.modulus,
+                min_chunk_size: self.min_chunk_size,
+                max_chunk_size: self.max_chunk_size,
+                pattern: self.pattern,
+                split: false,
+                merged: false,
+                encode_types: self.encode_types.clone(),
+                encode_values: self.encode_values.clone(),
+            };
+            let leaf_hash = leaf.get_hash();
+            storage.insert_node(leaf_hash, leaf.clone());
+            leaf_nodes.push(leaf);
+        }
+
+        leaf_nodes
+    }
+
+    /// Helper method to build parent levels from child nodes.
+    /// This recursively builds the tree from bottom to top.
+    fn build_parent_levels<S: NodeStorage<N>>(
+        &self,
+        child_nodes: Vec<ProllyNode<N>>,
+        storage: &mut S,
+    ) -> ProllyNode<N> {
+        let child_level = child_nodes[0].level;
+        let mut parent_keys = Vec::new();
+        let mut parent_values = Vec::new();
+
+        for child in &child_nodes {
+            let child_hash = child.get_hash();
+            parent_keys.push(child.keys[0].clone());
+            parent_values.push(child_hash.as_bytes().to_vec());
+        }
+
+        let mut parent_nodes = Vec::new();
+        let mut current_keys = Vec::new();
+        let mut current_values = Vec::new();
+
+        for i in 0..parent_keys.len() {
+            current_keys.push(parent_keys[i].clone());
+            current_values.push(parent_values[i].clone());
+
+            if current_keys.len() >= self.min_chunk_size {
+                let window_start = current_keys.len().saturating_sub(self.min_chunk_size);
+                let hash = Self::initialize_rolling_hash(
+                    &current_keys[window_start..],
+                    &current_values[window_start..],
+                    self.base,
+                    self.modulus,
+                );
+
+                if (hash & self.pattern == self.pattern)
+                    || current_keys.len() >= self.max_chunk_size
+                {
+                    let parent = ProllyNode {
+                        keys: current_keys.clone(),
+                        key_schema: self.key_schema.clone(),
+                        values: current_values.clone(),
+                        value_schema: self.value_schema.clone(),
+                        is_leaf: false,
+                        level: child_level + 1,
+                        base: self.base,
+                        modulus: self.modulus,
+                        min_chunk_size: self.min_chunk_size,
+                        max_chunk_size: self.max_chunk_size,
+                        pattern: self.pattern,
+                        split: false,
+                        merged: false,
+                        encode_types: self.encode_types.clone(),
+                        encode_values: self.encode_values.clone(),
+                    };
+                    let parent_hash = parent.get_hash();
+                    storage.insert_node(parent_hash, parent.clone());
+                    parent_nodes.push(parent);
+                    current_keys.clear();
+                    current_values.clear();
+                }
+            }
+        }
+
+        if !current_keys.is_empty() {
+            let parent = ProllyNode {
+                keys: current_keys,
+                key_schema: self.key_schema.clone(),
+                values: current_values,
+                value_schema: self.value_schema.clone(),
+                is_leaf: false,
+                level: child_level + 1,
+                base: self.base,
+                modulus: self.modulus,
+                min_chunk_size: self.min_chunk_size,
+                max_chunk_size: self.max_chunk_size,
+                pattern: self.pattern,
+                split: false,
+                merged: false,
+                encode_types: self.encode_types.clone(),
+                encode_values: self.encode_values.clone(),
+            };
+            let parent_hash = parent.get_hash();
+            storage.insert_node(parent_hash, parent.clone());
+            parent_nodes.push(parent);
+        }
+
+        if parent_nodes.len() > 1 {
+            self.build_parent_levels(parent_nodes, storage)
+        } else {
+            parent_nodes.into_iter().next().unwrap()
+        }
     }
 
     /// Traverse the tree in a breadth-first manner and return a string representation of the nodes.
