@@ -167,11 +167,27 @@ impl<const N: usize> NodeStorage<N> for S3NodeStorage<N> {
                 });
 
                 match result {
-                    Ok(_) => Some(()),
-                    Err(_) => None,
+                    Ok(_) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::debug!("Successfully wrote node to S3: {}", key);
+                        Some(())
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "tracing")]
+                        tracing::error!("Failed to write node to S3 ({}): {:?}", key, e);
+                        #[cfg(not(feature = "tracing"))]
+                        eprintln!("S3 write error for key {}: {:?}", key, e);
+                        None
+                    }
                 }
             }
-            Err(_) => None,
+            Err(e) => {
+                #[cfg(feature = "tracing")]
+                tracing::error!("Failed to serialize node: {:?}", e);
+                #[cfg(not(feature = "tracing"))]
+                eprintln!("Node serialization error: {:?}", e);
+                None
+            }
         }
     }
 
@@ -238,6 +254,9 @@ impl<const N: usize> NodeStorage<N> for S3NodeStorage<N> {
 mod tests {
     use super::*;
     use crate::config::TreeConfig;
+    use crate::digest::ValueDigest;
+    use crate::node::ProllyNode;
+    use crate::tree::{ProllyTree, Tree};
 
     fn create_test_node<const N: usize>() -> ProllyNode<N> {
         let config: TreeConfig<N> = TreeConfig::default();
@@ -260,22 +279,217 @@ mod tests {
         }
     }
 
-    // Note: These tests require AWS credentials and a real S3 bucket
-    // They are disabled by default and should be run manually
+    // Note: These tests require LocalStack or AWS S3 to be available
     #[test]
-    #[ignore]
+    #[ignore] // Run with: cargo test --features s3_storage test_s3_basic_operations -- --ignored --nocapture
     fn test_s3_basic_operations() {
-        // This test would require AWS credentials and a bucket
-        // Example implementation:
-        // let config = aws_config::load_from_env().await;
-        // let client = Client::new(&config);
-        // let mut storage = S3NodeStorage::<32>::new(client, "test-bucket".to_string(), "test/".to_string());
-        //
-        // let node = create_test_node();
-        // let hash = node.get_hash();
-        //
-        // assert!(storage.insert_node(hash.clone(), node.clone()).is_some());
-        // let retrieved = storage.get_node_by_hash(&hash);
-        // assert!(retrieved.is_some());
+        use tokio::runtime::Runtime;
+
+        let rt = Runtime::new().unwrap();
+
+        rt.block_on(async {
+            // Configure for LocalStack
+            let endpoint_url = std::env::var("S3_ENDPOINT_URL")
+                .unwrap_or_else(|_| "http://localhost:4566".to_string());
+            let bucket = std::env::var("S3_BUCKET")
+                .unwrap_or_else(|_| "prollytree-test".to_string());
+            let region = std::env::var("AWS_REGION")
+                .unwrap_or_else(|_| "us-east-1".to_string());
+
+            println!("Connecting to S3:");
+            println!("  Endpoint: {}", endpoint_url);
+            println!("  Bucket: {}", bucket);
+            println!("  Region: {}", region);
+
+            // Create AWS config
+            let config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_sdk_s3::config::Region::new(region))
+                .endpoint_url(&endpoint_url);
+
+            let sdk_config = config_loader.load().await;
+
+            let client = aws_sdk_s3::Client::new(&sdk_config);
+
+            // Test bucket exists
+            println!("Testing bucket access...");
+            let bucket_result = client.head_bucket()
+                .bucket(&bucket)
+                .send()
+                .await;
+
+            match bucket_result {
+                Ok(_) => println!("✓ Bucket '{}' is accessible", bucket),
+                Err(e) => {
+                    eprintln!("✗ Bucket '{}' not accessible: {:?}", bucket, e);
+                    panic!("Cannot access S3 bucket. Make sure LocalStack is running and bucket exists.");
+                }
+            }
+
+            // Create storage
+            let mut storage = S3NodeStorage::<32>::new(
+                client,
+                bucket.clone(),
+                "test/rust-test/".to_string()
+            );
+
+            // Create a test node
+            let node = create_test_node();
+            let hash = node.get_hash();
+
+            println!("Inserting test node with hash: {:x}", hash);
+
+            // Insert node
+            let insert_result = storage.insert_node(hash.clone(), node.clone());
+            assert!(insert_result.is_some(), "Failed to insert node to S3");
+            println!("✓ Node inserted successfully");
+
+            // Retrieve node
+            println!("Retrieving node from S3...");
+            let retrieved = storage.get_node_by_hash(&hash);
+            assert!(retrieved.is_some(), "Failed to retrieve node from S3");
+            println!("✓ Node retrieved successfully");
+
+            let retrieved_node = retrieved.unwrap();
+            assert_eq!(node.keys, retrieved_node.keys, "Retrieved node keys don't match");
+            assert_eq!(node.values, retrieved_node.values, "Retrieved node values don't match");
+            println!("✓ Retrieved node data matches original");
+
+            // Test with ProllyTree operations
+            println!("\nTesting with ProllyTree...");
+            let config = TreeConfig::default();
+            let storage2 = S3NodeStorage::<32>::new(
+                storage.client.as_ref().clone(),
+                bucket,
+                "test/tree-test/".to_string()
+            );
+
+            let mut tree = crate::tree::ProllyTree::new(storage2, config);
+
+            println!("Inserting key-value pairs...");
+            tree.insert(b"key1".to_vec(), b"value1".to_vec());
+            tree.insert(b"key2".to_vec(), b"value2".to_vec());
+            tree.insert(b"key3".to_vec(), b"value3".to_vec());
+
+            println!("✓ Inserted 3 key-value pairs");
+
+            // Verify retrieval
+            println!("Verifying data retrieval...");
+            let node1 = tree.find(&b"key1".to_vec()).expect("key1 not found");
+            assert_eq!(node1.values[0], b"value1".to_vec());
+            let node2 = tree.find(&b"key2".to_vec()).expect("key2 not found");
+            assert_eq!(node2.values[0], b"value2".to_vec());
+            let node3 = tree.find(&b"key3".to_vec()).expect("key3 not found");
+            assert_eq!(node3.values[0], b"value3".to_vec());
+            println!("✓ All values retrieved correctly");
+
+            println!("\n✓ All S3 storage tests passed!");
+        });
+    }
+
+    #[test]
+    #[ignore] // Run with: cargo test --features s3_storage test_s3_tree_persistence -- --ignored --nocapture
+    fn test_s3_tree_persistence() {
+        use tokio::runtime::Runtime;
+
+        let rt = Runtime::new().unwrap();
+
+        rt.block_on(async {
+            let endpoint_url = std::env::var("S3_ENDPOINT_URL")
+                .unwrap_or_else(|_| "http://localhost:4566".to_string());
+            let bucket = std::env::var("S3_BUCKET")
+                .unwrap_or_else(|_| "prollytree-test".to_string());
+            let region = std::env::var("AWS_REGION")
+                .unwrap_or_else(|_| "us-east-1".to_string());
+
+            println!("Testing tree persistence to S3");
+            println!("  Endpoint: {}", endpoint_url);
+            println!("  Bucket: {}", bucket);
+
+            // Create client
+            let config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                .region(aws_sdk_s3::config::Region::new(region));
+            let sdk_config = config_loader.load().await;
+            let s3_config_builder = aws_sdk_s3::config::Builder::from(&sdk_config)
+                .endpoint_url(&endpoint_url);
+            let client = aws_sdk_s3::Client::from_conf(s3_config_builder.build());
+
+            // Create tree with S3 storage
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let prefix = format!("test/persistence-test-{}/", timestamp);
+            println!("Using prefix: {}", prefix);
+
+            let storage = S3NodeStorage::<32>::new(
+                client.clone(),
+                bucket.clone(),
+                prefix.clone()
+            );
+
+            let config = TreeConfig::default();
+            let mut tree1 = ProllyTree::new(storage, config.clone());
+
+            // Insert data
+            println!("Inserting 10 key-value pairs...");
+            for i in 0..10 {
+                tree1.insert(format!("key{}", i).into_bytes(), format!("value{}", i).into_bytes());
+            }
+
+            let root_hash = tree1.get_root_hash().unwrap();
+            println!("Root hash: {:x}", root_hash);
+
+            // Check S3 to see what was actually written
+            println!("\nListing objects in S3 with prefix '{}'...", prefix);
+            let list_result = client
+                .list_objects_v2()
+                .bucket(&bucket)
+                .prefix(&prefix)
+                .send()
+                .await;
+
+            match list_result {
+                Ok(output) => {
+                    let count = output.contents().len();
+                    println!("✓ Found {} objects in S3:", count);
+                    for obj in output.contents() {
+                        println!("  - {}", obj.key().unwrap_or("unknown"));
+                    }
+                    assert!(count > 0, "Expected nodes to be written to S3 but found none!");
+                }
+                Err(e) => {
+                    panic!("Failed to list S3 objects: {:?}", e);
+                }
+            }
+
+            // Create new tree instance from same storage to verify persistence
+            println!("\nCreating new tree instance from persisted data...");
+            let storage2 = S3NodeStorage::<32>::new(
+                client,
+                bucket,
+                prefix
+            );
+
+            let mut config2 = TreeConfig::default();
+            config2.root_hash = Some(root_hash);
+
+            let tree2 = ProllyTree::load_from_storage(storage2, config2);
+            assert!(tree2.is_some(), "Failed to load tree from S3 storage");
+
+            let tree2 = tree2.unwrap();
+            println!("✓ Tree loaded from S3");
+
+            // Verify data
+            println!("Verifying persisted data...");
+            for i in 0..10 {
+                let key = format!("key{}", i).into_bytes();
+                let expected = format!("value{}", i).into_bytes();
+                let node = tree2.find(&key).expect(&format!("key{} not found", i));
+                assert_eq!(node.values[0], expected, "Value mismatch for key{}", i);
+            }
+            println!("✓ All 10 values verified from persisted tree");
+
+            println!("\n✓ S3 persistence test passed!");
+        });
     }
 }
