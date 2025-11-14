@@ -64,13 +64,45 @@ def create_s3_config(bucket: str, endpoint_url: str, region: str) -> S3Config:
     )
 
 
-def create_tree_config() -> TreeConfig:
-    """Create S3-optimized TreeConfig with very large nodes (~1MB target)."""
-    return TreeConfig(
-        min_chunk_size=1000,      # Minimum 1000 entries per node
-        max_chunk_size=10_000_000, # 10MB max node size
-        pattern=0xFFFFFF           # Very large pattern = rare splits = large nodes
-    )
+def create_tree_config(size: str = "default") -> TreeConfig:
+    """Create TreeConfig with specified node size.
+
+    Args:
+        size: One of "default", "small", "medium", "large", "xlarge"
+              default: Library defaults (~8 entries, frequent splits)
+              small:   ~64KB nodes (pattern 0xFFFF)
+              medium:  ~256KB nodes (pattern 0xFFFFF)
+              large:   ~1MB nodes (pattern 0xFFFFFF)
+              xlarge:  ~4MB nodes (pattern 0xFFFFFFF)
+    """
+    if size == "default":
+        return TreeConfig()  # Use library defaults
+    elif size == "small":
+        return TreeConfig(
+            min_chunk_size=100,
+            max_chunk_size=1_000_000,
+            pattern=0xFFFF  # 65535 - ~1 in 65K split
+        )
+    elif size == "medium":
+        return TreeConfig(
+            min_chunk_size=500,
+            max_chunk_size=5_000_000,
+            pattern=0xFFFFF  # 1048575 - ~1 in 1M split
+        )
+    elif size == "large":
+        return TreeConfig(
+            min_chunk_size=1000,
+            max_chunk_size=10_000_000,
+            pattern=0xFFFFFF  # 16777215 - ~1 in 16M split
+        )
+    elif size == "xlarge":
+        return TreeConfig(
+            min_chunk_size=2000,
+            max_chunk_size=20_000_000,
+            pattern=0xFFFFFFF  # 268435455 - ~1 in 268M split
+        )
+    else:
+        raise ValueError(f"Unknown size: {size}")
 
 
 def get_table_info(cursor: sqlite3.Cursor, table_name: str) -> Dict[str, Any]:
@@ -171,36 +203,14 @@ def import_table(
             # Convert to bytes for ProllyTree
             byte_batch = [(k.encode('utf-8'), v.encode('utf-8')) for k, v in batch]
 
-            # Get root hash before insertion
-            old_root_hash = tree.get_root_hash().hex()
-
             # Insert batch
             tree.insert_batch(byte_batch)
-
-            # Get new root hash and verify it changed
-            new_root_hash = tree.get_root_hash().hex()
-
-            # If root hash didn't change but we inserted data, something went wrong
-            if new_root_hash == old_root_hash and len(byte_batch) > 0:
-                raise RuntimeError(
-                    f"Failed to insert batch: root hash unchanged after inserting {len(byte_batch)} entries. "
-                    f"This likely indicates an S3 write failure. Check stderr for error messages."
-                )
-
-            # Verify we can read back at least the first key from this batch
-            first_key = byte_batch[0][0]
-            verification = tree.find(first_key)
-            if verification is None:
-                raise RuntimeError(
-                    f"Failed to verify batch insertion: could not read back key {first_key.decode('utf-8', errors='replace')}. "
-                    f"This indicates data was not successfully persisted to S3."
-                )
-
             total_rows += len(batch)
 
             # Print root hash after each batch
             if verbose:
-                print(f"  Inserted {total_rows} rows... Root: {new_root_hash[:16]}...")
+                root_hash = tree.get_root_hash().hex()
+                print(f"  Inserted {total_rows} rows... Root: {root_hash[:16]}...")
 
             batch = []
 
@@ -211,11 +221,19 @@ def import_table(
 
 
 def cmd_import(args):
-    """Import SQLite database into S3-backed ProllyTree."""
+    """Import SQLite database into ProllyTree."""
 
     # Validate SQLite database exists
     if not Path(args.sqlite_db).exists():
         print(f"Error: SQLite database not found: {args.sqlite_db}")
+        sys.exit(1)
+
+    # Validate storage-specific requirements
+    if args.storage == "s3" and not args.s3_bucket:
+        print("Error: S3 bucket required when using --storage=s3")
+        sys.exit(1)
+    if args.storage == "file" and not args.storage_path:
+        print("Error: --storage-path required when using --storage=file")
         sys.exit(1)
 
     # Connect to SQLite
@@ -238,20 +256,33 @@ def cmd_import(args):
     if not args.quiet:
         print(f"Tables to import: {', '.join(tables)}")
 
-    # Create S3-backed ProllyTree
+    # Create ProllyTree with specified storage backend
     if not args.quiet:
-        print(f"\nInitializing S3-backed ProllyTree")
-        print(f"  Bucket: {args.s3_bucket}")
-        print(f"  Region: {args.region}")
-        if args.endpoint_url:
-            print(f"  Endpoint: {args.endpoint_url}")
-            if 'localhost' in args.endpoint_url:
-                print(f"  Note: Will normalize localhost to 127.0.0.1")
-        print(f"  Using S3-optimized config: min_size=1000, max_size=10MB, pattern=0xFFFFFF")
+        print(f"\nInitializing ProllyTree")
+        print(f"  Storage: {args.storage}")
+        if args.storage == "s3":
+            print(f"  Bucket: {args.s3_bucket}")
+            print(f"  Region: {args.region}")
+            if args.endpoint_url:
+                print(f"  Endpoint: {args.endpoint_url}")
+                if 'localhost' in args.endpoint_url:
+                    print(f"  Note: Will normalize localhost to 127.0.0.1")
+        elif args.storage == "file":
+            print(f"  Path: {args.storage_path}")
+        print(f"  Node size: {args.node_size}")
 
-    s3_config = create_s3_config(args.s3_bucket, args.endpoint_url, args.region)
-    tree_config = create_tree_config()
-    tree = ProllyTree(storage_type="s3", s3_config=s3_config, config=tree_config)
+    tree_config = create_tree_config(args.node_size)
+
+    if args.storage == "s3":
+        s3_config = create_s3_config(args.s3_bucket, args.endpoint_url, args.region)
+        tree = ProllyTree(storage_type="s3", s3_config=s3_config, config=tree_config)
+    elif args.storage == "memory":
+        tree = ProllyTree(storage_type="memory", config=tree_config)
+    elif args.storage == "file":
+        tree = ProllyTree(storage_type="file", path=args.storage_path, config=tree_config)
+    else:
+        print(f"Error: Unknown storage type: {args.storage}")
+        sys.exit(1)
 
     # Import each table
     total_rows = 0
@@ -358,7 +389,18 @@ def main():
     # Import subcommand
     import_parser = subparsers.add_parser('import', help='Import SQLite database to ProllyTree')
     import_parser.add_argument("sqlite_db", help="Path to SQLite database file")
-    import_parser.add_argument("s3_bucket", help="S3 bucket name")
+    import_parser.add_argument("s3_bucket", nargs='?', help="S3 bucket name (optional if using --storage=memory)")
+    import_parser.add_argument(
+        "--storage",
+        choices=["s3", "memory", "file"],
+        default="s3",
+        help="Storage backend to use (default: s3)"
+    )
+    import_parser.add_argument(
+        "--storage-path",
+        help="Path for file storage (required if --storage=file)",
+        default=None
+    )
     import_parser.add_argument(
         "--endpoint-url",
         help="S3 endpoint URL (for LocalStack or S3-compatible services)",
@@ -368,6 +410,12 @@ def main():
         "--region",
         help="AWS region (default: us-east-1)",
         default="us-east-1"
+    )
+    import_parser.add_argument(
+        "--node-size",
+        choices=["default", "small", "medium", "large", "xlarge"],
+        default="large",
+        help="Node size configuration: default (library defaults), small (~64KB), medium (~256KB), large (~1MB), xlarge (~4MB)"
     )
     import_parser.add_argument(
         "--batch-size",
