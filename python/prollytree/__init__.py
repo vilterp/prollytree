@@ -28,6 +28,14 @@ from .prollytree import (
     ConflictResolution
 )
 
+# Try to import S3 functionality if available
+s3_available = False
+try:
+    from .prollytree import S3Config
+    s3_available = True
+except ImportError:
+    pass
+
 # Try to import SQL functionality if available
 sql_available = False
 try:
@@ -55,6 +63,9 @@ __all__ = [
     "MergeConflict",
     "ConflictResolution"
 ]
+
+if s3_available:
+    __all__.append("S3Config")
 
 if sql_available:
     __all__.append("ProllySQLStore")
