@@ -591,7 +591,13 @@ impl<const N: usize, S: NodeStorage<N>> Tree<N, S> for ProllyTree<N, S> {
 
     fn diff(&self, other: &Self) -> Vec<DiffResult> {
         let mut diffs = Vec::new();
-        self.diff_recursive(&self.root, &other.root, &mut diffs);
+        self.diff_recursive(
+            &self.root,
+            &self.storage,
+            &other.root,
+            &other.storage,
+            &mut diffs,
+        );
         diffs
     }
 
@@ -858,7 +864,7 @@ impl<const N: usize, S: NodeStorage<N>> ProllyTree<N, S> {
         new_node: &ProllyNode<N>,
         diffs: &mut Vec<DiffResult>,
     ) {
-        self.diff_recursive(old_node, new_node, diffs);
+        self.diff_recursive(old_node, &self.storage, new_node, &self.storage, diffs);
     }
 
     /// Find a value for a specific key in a node tree
@@ -996,49 +1002,120 @@ impl<const N: usize, S: NodeStorage<N>> ProllyTree<N, S> {
     /// # Arguments
     ///
     /// * `old_node` - The node from the original tree.
+    /// * `old_storage` - The storage for the original tree.
     /// * `new_node` - The node from the new tree.
+    /// * `new_storage` - The storage for the new tree.
     /// * `diffs` - The vector to store the differences.
     fn diff_recursive(
         &self,
         old_node: &ProllyNode<N>,
+        old_storage: &S,
         new_node: &ProllyNode<N>,
+        new_storage: &S,
         diffs: &mut Vec<DiffResult>,
     ) {
-        let mut old_iter = old_node.keys.iter().zip(old_node.values.iter()).peekable();
-        let mut new_iter = new_node.keys.iter().zip(new_node.values.iter()).peekable();
+        // For internal nodes, we need to recursively descend to leaf nodes
+        // We can't compare internal node values directly as they're child hashes
+        if !old_node.is_leaf || !new_node.is_leaf {
+            // Collect all leaf key-value pairs from both trees
+            let mut old_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            let mut new_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
 
-        while let (Some((old_key, old_value)), Some((new_key, new_value))) =
-            (old_iter.peek(), new_iter.peek())
-        {
-            match old_key.cmp(new_key) {
-                std::cmp::Ordering::Less => {
-                    diffs.push(DiffResult::Removed(old_key.to_vec(), old_value.to_vec()));
-                    old_iter.next();
-                }
-                std::cmp::Ordering::Greater => {
-                    diffs.push(DiffResult::Added(new_key.to_vec(), new_value.to_vec()));
-                    new_iter.next();
-                }
-                std::cmp::Ordering::Equal => {
-                    if old_value != new_value {
-                        diffs.push(DiffResult::Modified(
-                            old_key.to_vec(),
-                            old_value.to_vec(),
-                            new_value.to_vec(),
-                        ));
+            Self::collect_all_entries_static(old_node, old_storage, &mut old_entries);
+            Self::collect_all_entries_static(new_node, new_storage, &mut new_entries);
+
+            // Now compare the flattened entry lists
+            let mut old_iter = old_entries.iter().peekable();
+            let mut new_iter = new_entries.iter().peekable();
+
+            while let (Some((old_key, old_value)), Some((new_key, new_value))) =
+                (old_iter.peek(), new_iter.peek())
+            {
+                match old_key.cmp(new_key) {
+                    std::cmp::Ordering::Less => {
+                        diffs.push(DiffResult::Removed(old_key.clone(), old_value.clone()));
+                        old_iter.next();
                     }
-                    old_iter.next();
-                    new_iter.next();
+                    std::cmp::Ordering::Greater => {
+                        diffs.push(DiffResult::Added(new_key.clone(), new_value.clone()));
+                        new_iter.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if old_value != new_value {
+                            diffs.push(DiffResult::Modified(
+                                old_key.clone(),
+                                old_value.clone(),
+                                new_value.clone(),
+                            ));
+                        }
+                        old_iter.next();
+                        new_iter.next();
+                    }
                 }
             }
-        }
 
-        for (old_key, old_value) in old_iter {
-            diffs.push(DiffResult::Removed(old_key.clone(), old_value.clone()));
-        }
+            for (old_key, old_value) in old_iter {
+                diffs.push(DiffResult::Removed(old_key.clone(), old_value.clone()));
+            }
 
-        for (new_key, new_value) in new_iter {
-            diffs.push(DiffResult::Added(new_key.clone(), new_value.clone()));
+            for (new_key, new_value) in new_iter {
+                diffs.push(DiffResult::Added(new_key.clone(), new_value.clone()));
+            }
+        } else {
+            // Both are leaf nodes - compare directly
+            let mut old_iter = old_node.keys.iter().zip(old_node.values.iter()).peekable();
+            let mut new_iter = new_node.keys.iter().zip(new_node.values.iter()).peekable();
+
+            while let (Some((old_key, old_value)), Some((new_key, new_value))) =
+                (old_iter.peek(), new_iter.peek())
+            {
+                match old_key.cmp(new_key) {
+                    std::cmp::Ordering::Less => {
+                        diffs.push(DiffResult::Removed(old_key.to_vec(), old_value.to_vec()));
+                        old_iter.next();
+                    }
+                    std::cmp::Ordering::Greater => {
+                        diffs.push(DiffResult::Added(new_key.to_vec(), new_value.to_vec()));
+                        new_iter.next();
+                    }
+                    std::cmp::Ordering::Equal => {
+                        if old_value != new_value {
+                            diffs.push(DiffResult::Modified(
+                                old_key.to_vec(),
+                                old_value.to_vec(),
+                                new_value.to_vec(),
+                            ));
+                        }
+                        old_iter.next();
+                        new_iter.next();
+                    }
+                }
+            }
+
+            for (old_key, old_value) in old_iter {
+                diffs.push(DiffResult::Removed(old_key.clone(), old_value.clone()));
+            }
+
+            for (new_key, new_value) in new_iter {
+                diffs.push(DiffResult::Added(new_key.clone(), new_value.clone()));
+            }
+        }
+    }
+
+    /// Collect all leaf entries from a node and its children (static version for diff)
+    fn collect_all_entries_static(
+        node: &ProllyNode<N>,
+        storage: &S,
+        entries: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    ) {
+        if node.is_leaf {
+            for (key, value) in node.keys.iter().zip(node.values.iter()) {
+                entries.push((key.clone(), value.clone()));
+            }
+        } else {
+            for child in node.children(storage) {
+                Self::collect_all_entries_static(&child, storage, entries);
+            }
         }
     }
 
