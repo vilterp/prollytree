@@ -90,9 +90,9 @@ def main():
 
     # Retrieve data
     print("Retrieving data...")
-    print(f"  name: {tree.get(b'name').decode()}")
-    print(f"  age: {tree.get(b'age').decode()}")
-    print(f"  city: {tree.get(b'city').decode()}")
+    print(f"  name: {tree.find(b'name').decode()}")
+    print(f"  age: {tree.find(b'age').decode()}")
+    print(f"  city: {tree.find(b'city').decode()}")
     print()
 
     # Example 2: Diff between two S3-backed trees
@@ -147,35 +147,32 @@ def main():
 
     print()
 
-    # Example 3: Persistence across instances
-    print("Example 3: Data Persistence Across Tree Instances")
+    # Example 3: Custom cache sizes for performance tuning
+    print("Example 3: Custom Cache Sizes")
     print("-" * 60)
 
-    prefix = "prollytree/persistence/"
-
-    # Create tree and insert data
-    s3_config_1 = S3Config(
+    # Small cache for memory-constrained environments
+    s3_config_small = S3Config(
         bucket=bucket,
-        prefix=prefix,
+        prefix="prollytree/small-cache/",
         region=region,
         endpoint_url=endpoint_url,
+        cache_size=100,
     )
-    tree_1 = ProllyTree(storage_type="s3", s3_config=s3_config_1)
-    tree_1.insert(b"persistent_key", b"persistent_value")
-    root_hash = tree_1.root_hash()
-    print(f"Stored data with root hash: {root_hash}")
+    tree_small = ProllyTree(storage_type="s3", s3_config=s3_config_small)
+    print("Created tree with cache_size=100 (memory-constrained)")
 
-    # Create new tree instance and load from hash
-    s3_config_2 = S3Config(
+    # Large cache for high-performance environments
+    s3_config_large = S3Config(
         bucket=bucket,
-        prefix=prefix,
+        prefix="prollytree/large-cache/",
         region=region,
         endpoint_url=endpoint_url,
+        cache_size=10000,
     )
-    tree_2 = ProllyTree(storage_type="s3", s3_config=s3_config_2)
-    tree_2.load_from_hash(root_hash)
-    value = tree_2.get(b"persistent_key")
-    print(f"Retrieved value from new instance: {value.decode()}")
+    tree_large = ProllyTree(storage_type="s3", s3_config=s3_config_large)
+    print("Created tree with cache_size=10000 (high-performance)")
+    print("Cache size can be tuned based on your workload and memory constraints")
     print()
 
     print("=" * 60)
