@@ -142,13 +142,24 @@ class TestS3Storage:
 
         # Verify diff results
         assert len(diff) > 0
-        print(f"\nDiff results: {diff}")
+        print(f"\nDiff results: {len(diff)} changes")
+
+        # Convert diff list to a more testable format
+        diff_by_type = {"added": [], "removed": [], "modified": []}
+        for change in diff:
+            change_type = change["type"]
+            key = change["key"]
+            diff_by_type[change_type].append(key)
 
         # Verify specific differences
-        # - key1 exists only in tree1
-        # - key2 has different values
-        # - key3 exists only in tree2
-        # - shared has the same value in both
+        # - key1 exists only in tree1 (removed when comparing to tree2)
+        # - key2 has different values (modified)
+        # - key3 exists only in tree2 (added when comparing to tree2)
+        # - shared has the same value in both (no diff)
+
+        assert b"key3" in diff_by_type["added"]  # key3 only in tree2
+        assert b"key1" in diff_by_type["removed"]  # key1 only in tree1
+        assert b"key2" in diff_by_type["modified"]  # key2 has different values
 
     @pytest.mark.skipif(not S3_TEST_BUCKET, reason="S3_TEST_BUCKET not set")
     def test_s3_tree_with_custom_cache(self):

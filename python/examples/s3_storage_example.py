@@ -143,7 +143,21 @@ def main():
 
     print(f"\nFound {len(diff)} differences:")
     for i, change in enumerate(diff, 1):
-        print(f"\n{i}. {change}")
+        change_type = change["type"]
+        key = change["key"].decode('utf-8', errors='replace')
+
+        if change_type == "added":
+            value = change["value"].decode('utf-8', errors='replace')
+            print(f"\n{i}. ADDED: '{key}' = '{value}'")
+        elif change_type == "removed":
+            value = change["value"].decode('utf-8', errors='replace')
+            print(f"\n{i}. REMOVED: '{key}' (was '{value}')")
+        elif change_type == "modified":
+            old_val = change["old_value"].decode('utf-8', errors='replace')
+            new_val = change["new_value"].decode('utf-8', errors='replace')
+            print(f"\n{i}. MODIFIED: '{key}'")
+            print(f"   Old: '{old_val}'")
+            print(f"   New: '{new_val}'")
 
     print()
 

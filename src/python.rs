@@ -410,31 +410,64 @@ impl PyProllyTree {
         })
     }
 
-    fn diff(&self, py: Python, _other: &PyProllyTree) -> PyResult<Py<PyDict>> {
-        // Implement a key-value level diff by comparing actual data
-        // This approach works regardless of tree structure differences
+    fn diff(&self, py: Python, other: &PyProllyTree) -> PyResult<Py<PyList>> {
+        // Use the tree's native diff implementation when both have the same storage type
+        py.allow_threads(|| {
+            let self_tree = self.tree.lock().unwrap();
+            let other_tree = other.tree.lock().unwrap();
 
-        let dict = PyDict::new_bound(py);
-        let added = PyDict::new_bound(py);
-        let removed = PyDict::new_bound(py);
-        let modified = PyDict::new_bound(py);
+            // Get diff results from the tree implementation
+            let diff_results = match (&*self_tree, &*other_tree) {
+                (ProllyTreeWrapper::Memory(self_t), ProllyTreeWrapper::Memory(other_t)) => {
+                    self_t.diff(other_t)
+                }
+                (ProllyTreeWrapper::File(self_t), ProllyTreeWrapper::File(other_t)) => {
+                    self_t.diff(other_t)
+                }
+                #[cfg(feature = "s3_storage")]
+                (ProllyTreeWrapper::S3(self_t), ProllyTreeWrapper::S3(other_t)) => {
+                    self_t.diff(other_t)
+                }
+                _ => {
+                    return Err(PyValueError::new_err(
+                        "Cannot diff trees with different storage backends. \
+                         Both trees must use the same storage type (memory, file, or s3)."
+                    ));
+                }
+            };
 
-        // We'll need to collect all keys from both trees and compare values
-        // For simplicity, we'll implement this by getting all key-value pairs
-        // This is not the most efficient approach, but it works correctly
+            // Convert DiffResults to Python list of dictionaries
+            Python::with_gil(|py| {
+                let result_list = PyList::empty_bound(py);
 
-        // Note: This is a simplified implementation. A proper implementation
-        // would traverse both trees simultaneously, but that requires more
-        // complex logic to handle different tree structures.
+                for diff_result in diff_results {
+                    let dict = PyDict::new_bound(py);
 
-        // For now, let's disable the diff functionality and return empty results
-        // until we can implement a proper key-value level diff
+                    match diff_result {
+                        crate::diff::DiffResult::Added(key, value) => {
+                            dict.set_item("type", "added")?;
+                            dict.set_item("key", PyBytes::new_bound(py, &key))?;
+                            dict.set_item("value", PyBytes::new_bound(py, &value))?;
+                        }
+                        crate::diff::DiffResult::Removed(key, value) => {
+                            dict.set_item("type", "removed")?;
+                            dict.set_item("key", PyBytes::new_bound(py, &key))?;
+                            dict.set_item("value", PyBytes::new_bound(py, &value))?;
+                        }
+                        crate::diff::DiffResult::Modified(key, old_value, new_value) => {
+                            dict.set_item("type", "modified")?;
+                            dict.set_item("key", PyBytes::new_bound(py, &key))?;
+                            dict.set_item("old_value", PyBytes::new_bound(py, &old_value))?;
+                            dict.set_item("new_value", PyBytes::new_bound(py, &new_value))?;
+                        }
+                    }
 
-        dict.set_item("added", added)?;
-        dict.set_item("removed", removed)?;
-        dict.set_item("modified", modified)?;
+                    result_list.append(dict)?;
+                }
 
-        Ok(dict.into())
+                Ok(result_list.into())
+            })
+        })
     }
 
     fn traverse(&self) -> PyResult<String> {

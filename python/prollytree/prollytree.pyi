@@ -111,18 +111,29 @@ class ProllyTree:
         """Verify a Merkle proof for a key"""
         ...
 
-    def diff(self, other: "ProllyTree") -> Dict[str, Union[Dict[bytes, bytes], Dict[bytes, Dict[str, bytes]]]]:
+    def diff(self, other: "ProllyTree") -> List[Dict[str, Union[str, bytes]]]:
         """
         Compare two trees and return the differences from this tree to other.
 
-        Note: Currently returns empty results due to implementation limitations.
-        The diff operation works at the tree structure level, but probabilistic trees
-        can have different structures for the same logical data.
+        Returns a list of dictionaries, where each dictionary represents a single change:
+        - For added keys: {"type": "added", "key": bytes, "value": bytes}
+        - For removed keys: {"type": "removed", "key": bytes, "value": bytes}
+        - For modified keys: {"type": "modified", "key": bytes, "old_value": bytes, "new_value": bytes}
 
-        Returns a dictionary with:
-        - "added": Dict of keys/values present in other but not in this tree
-        - "removed": Dict of keys/values present in this tree but not in other
-        - "modified": Dict of keys with different values (maps to {"old": value_in_self, "new": value_in_other})
+        Example:
+            tree1 = ProllyTree()
+            tree1.insert(b"key1", b"value1")
+
+            tree2 = ProllyTree()
+            tree2.insert(b"key1", b"value1_modified")
+            tree2.insert(b"key2", b"value2")
+
+            diffs = tree1.diff(tree2)
+            # Returns:
+            # [
+            #   {"type": "added", "key": b"key2", "value": b"value2"},
+            #   {"type": "modified", "key": b"key1", "old_value": b"value1", "new_value": b"value1_modified"}
+            # ]
         """
         ...
 
