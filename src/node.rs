@@ -764,30 +764,91 @@ impl<const N: usize> Node<N> for ProllyNode<N> {
         keys: &[Vec<u8>],
         values: &[Vec<u8>],
         storage: &mut S,
-        path_hashes: Vec<ValueDigest<N>>,
+        _path_hashes: Vec<ValueDigest<N>>,
     ) {
         if keys.is_empty() {
             return;
         }
 
-        // If we're inserting into a non-empty tree, fall back to individual inserts
-        if !self.keys.is_empty() {
-            let mut key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> =
-                keys.iter().cloned().zip(values.iter().cloned()).collect();
-            key_value_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        // Sort mutations (the new key-value pairs to insert)
+        let mut mutations: Vec<(Vec<u8>, Vec<u8>)> =
+            keys.iter().cloned().zip(values.iter().cloned()).collect();
+        mutations.sort_by(|a, b| a.0.cmp(&b.0));
 
-            for (key, value) in key_value_pairs {
-                self.insert(key, value, storage, path_hashes.clone());
+        // If tree is empty, use fast path
+        if self.keys.is_empty() {
+            let leaf_nodes = self.build_leaf_nodes_streaming(&mutations, storage);
+
+            if leaf_nodes.is_empty() {
+                return;
+            }
+
+            if leaf_nodes.len() == 1 {
+                *self = leaf_nodes.into_iter().next().unwrap();
+            } else {
+                let root = self.build_parent_levels(leaf_nodes, storage);
+                *self = root;
             }
             return;
         }
 
-        // Optimized path: build tree bottom-up for empty tree
-        let mut key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> =
-            keys.iter().cloned().zip(values.iter().cloned()).collect();
-        key_value_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        // DoltDB-style incremental batch insert:
+        // Walk through old tree and mutations simultaneously, building new tree
+        //
+        // Current implementation: O(N + M) where N = old tree size, M = mutations
+        // This collects all entries and rebuilds the tree, which is much faster than
+        // O(N*M) individual inserts but still processes all nodes.
+        //
+        // Future optimization: Instead of collecting all entries, we could walk the
+        // tree structure and reuse unchanged subtree nodes when mutations don't
+        // affect them. However, this is complex due to content-defined splitting:
+        // inserting a key might shift the rolling hash boundaries, requiring us to
+        // rebuild parent nodes even when child data is unchanged.
+        let mut merged_pairs = Vec::new();
 
-        let leaf_nodes = self.build_leaf_nodes_streaming(&key_value_pairs, storage);
+        // Collect all entries from the old tree
+        let mut old_entries = Vec::new();
+        self.collect_all_leaf_entries(storage, &mut old_entries);
+
+        // Merge old entries with mutations
+        let mut old_iter = old_entries.iter().peekable();
+        let mut mut_iter = mutations.iter().peekable();
+
+        while let (Some((old_key, old_value)), Some((mut_key, mut_value))) =
+            (old_iter.peek(), mut_iter.peek())
+        {
+            match old_key.cmp(mut_key) {
+                std::cmp::Ordering::Less => {
+                    // Old entry comes first, copy it
+                    merged_pairs.push((old_key.clone(), old_value.clone()));
+                    old_iter.next();
+                }
+                std::cmp::Ordering::Equal => {
+                    // Mutation overwrites old entry
+                    merged_pairs.push((mut_key.clone(), mut_value.clone()));
+                    old_iter.next();
+                    mut_iter.next();
+                }
+                std::cmp::Ordering::Greater => {
+                    // Mutation is a new entry
+                    merged_pairs.push((mut_key.clone(), mut_value.clone()));
+                    mut_iter.next();
+                }
+            }
+        }
+
+        // Append remaining old entries
+        for (key, value) in old_iter {
+            merged_pairs.push((key.clone(), value.clone()));
+        }
+
+        // Append remaining mutations
+        for (key, value) in mut_iter {
+            merged_pairs.push((key.clone(), value.clone()));
+        }
+
+        // Build new tree from merged pairs
+        let leaf_nodes = self.build_leaf_nodes_streaming(&merged_pairs, storage);
 
         if leaf_nodes.is_empty() {
             return;
@@ -1050,6 +1111,26 @@ impl<const N: usize> ProllyNode<N> {
 
         // Return the vector of child nodes
         children
+    }
+
+    /// Collects all leaf entries (key-value pairs) from this node and its descendants
+    /// in sorted order. Used by the incremental batch insert algorithm.
+    fn collect_all_leaf_entries<S: NodeStorage<N>>(
+        &self,
+        storage: &S,
+        entries: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    ) {
+        if self.is_leaf {
+            // This is a leaf node, collect all its key-value pairs
+            for (key, value) in self.keys.iter().zip(self.values.iter()) {
+                entries.push((key.clone(), value.clone()));
+            }
+        } else {
+            // This is an internal node, recursively collect from children
+            for child in self.children(storage) {
+                child.collect_all_leaf_entries(storage, entries);
+            }
+        }
     }
 
     /// Helper method to build leaf nodes using streaming construction.

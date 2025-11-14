@@ -169,11 +169,7 @@ fn import_table(
         if verbose && all_keys.len() % batch_size == 0 {
             let elapsed = batch_start.elapsed();
             let rate = all_keys.len() as f64 / elapsed.as_secs_f64();
-            println!(
-                "  Read {} rows... ({:.1} rows/sec)",
-                all_keys.len(),
-                rate
-            );
+            println!("  Read {} rows... ({:.1} rows/sec)", all_keys.len(), rate);
         }
     }
 
@@ -244,17 +240,16 @@ fn main() -> SqliteResult<()> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 2 {
-        eprintln!(
-            "Usage: {} <sqlite_file> [--node-size SIZE] [--batch-size N] [--verbose]",
-            args[0]
-        );
+        eprintln!("Usage: {} <sqlite_file> [OPTIONS]", args[0]);
         eprintln!("\nOptions:");
         eprintln!("  --node-size SIZE    Node size: default, small, medium, large, xlarge (default: default)");
-        eprintln!("  --batch-size N      Batch size for inserts (default: 1000)");
-        eprintln!("  --verbose           Print detailed progress");
+        eprintln!("  --batch-size N      Batch size for progress reporting (default: 1000)");
+        eprintln!("  --table TABLE       Import only specified table");
+        eprintln!("  --verbose, -v       Print detailed progress");
         eprintln!("\nExamples:");
         eprintln!("  {} mydata.db", args[0]);
         eprintln!("  {} mydata.db --node-size large --verbose", args[0]);
+        eprintln!("  {} mydata.db --table loads --verbose", args[0]);
         std::process::exit(1);
     }
 
@@ -262,6 +257,7 @@ fn main() -> SqliteResult<()> {
     let mut node_size = "default";
     let mut batch_size = 1000;
     let mut verbose = false;
+    let mut single_table: Option<String> = None;
 
     // Parse arguments
     let mut i = 2;
@@ -285,6 +281,15 @@ fn main() -> SqliteResult<()> {
                     std::process::exit(1);
                 }
             }
+            "--table" => {
+                if i + 1 < args.len() {
+                    single_table = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    eprintln!("Error: --table requires a value");
+                    std::process::exit(1);
+                }
+            }
             "--verbose" | "-v" => {
                 verbose = true;
                 i += 1;
@@ -300,7 +305,20 @@ fn main() -> SqliteResult<()> {
     let conn = Connection::open(sqlite_file)?;
 
     println!("Getting table list...");
-    let tables = get_all_tables(&conn)?;
+    let all_tables = get_all_tables(&conn)?;
+
+    // Filter to single table if specified
+    let tables: Vec<String> = if let Some(ref table) = single_table {
+        if all_tables.contains(table) {
+            vec![table.clone()]
+        } else {
+            eprintln!("Error: Table '{}' not found in database", table);
+            eprintln!("Available tables: {}", all_tables.join(", "));
+            std::process::exit(1);
+        }
+    } else {
+        all_tables
+    };
 
     if tables.is_empty() {
         println!("No tables found in database");
