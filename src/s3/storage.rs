@@ -18,6 +18,7 @@ use crate::storage::NodeStorage;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::Client;
 use lru::LruCache;
+use std::mem::ManuallyDrop;
 use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
@@ -34,7 +35,9 @@ pub struct S3NodeStorage<const N: usize> {
     bucket: String,
     prefix: String,
     cache: Arc<Mutex<LruCache<ValueDigest<N>, ProllyNode<N>>>>,
-    runtime: Arc<tokio::runtime::Runtime>,
+    /// Runtime wrapped in ManuallyDrop to prevent drop issues in async contexts
+    /// We manually manage its lifecycle to avoid "cannot drop runtime in async context" panics
+    runtime: ManuallyDrop<Option<Arc<tokio::runtime::Runtime>>>,
 }
 
 impl<const N: usize> Clone for S3NodeStorage<N> {
@@ -44,8 +47,16 @@ impl<const N: usize> Clone for S3NodeStorage<N> {
             bucket: self.bucket.clone(),
             prefix: self.prefix.clone(),
             cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
-            runtime: self.runtime.clone(),
+            runtime: ManuallyDrop::new((*self.runtime).clone()),
         }
+    }
+}
+
+impl<const N: usize> Drop for S3NodeStorage<N> {
+    fn drop(&mut self) {
+        // Since runtime is ManuallyDrop, we don't drop it automatically
+        // This prevents the "cannot drop runtime in async context" panic
+        // The runtime will be cleaned up when the process exits
     }
 }
 
@@ -64,7 +75,7 @@ impl<const N: usize> S3NodeStorage<N> {
             bucket,
             prefix,
             cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(1000).unwrap()))),
-            runtime: Arc::new(runtime),
+            runtime: ManuallyDrop::new(Some(Arc::new(runtime))),
         }
     }
 
@@ -83,7 +94,7 @@ impl<const N: usize> S3NodeStorage<N> {
             cache: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(cache_size).unwrap_or(NonZeroUsize::new(1000).unwrap()),
             ))),
-            runtime: Arc::new(runtime),
+            runtime: ManuallyDrop::new(Some(Arc::new(runtime))),
         }
     }
 
@@ -98,8 +109,22 @@ impl<const N: usize> S3NodeStorage<N> {
     }
 
     /// Helper to run async operations synchronously
+    /// This handles both cases: when called from within an async context and when not
     fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
+        // Check if we're already inside a tokio runtime
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // We're inside a runtime, use block_in_place to avoid nested runtime error
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Err(_) => {
+                // We're not in a runtime, use our own
+                self.runtime
+                    .as_ref()
+                    .expect("Runtime should be available")
+                    .block_on(future)
+            }
+        }
     }
 }
 
@@ -374,12 +399,24 @@ mod tests {
 
             // Verify retrieval
             println!("Verifying data retrieval...");
+
+            // Helper to extract value from node
+            let get_value = |node: &ProllyNode<32>, key: &[u8]| -> Vec<u8> {
+                node.keys.iter()
+                    .position(|k| k == key)
+                    .map(|idx| node.values[idx].clone())
+                    .expect("Key not found in node")
+            };
+
             let node1 = tree.find(&b"key1".to_vec()).expect("key1 not found");
-            assert_eq!(node1.values[0], b"value1".to_vec());
+            assert_eq!(get_value(&node1, b"key1"), b"value1".to_vec());
+
             let node2 = tree.find(&b"key2".to_vec()).expect("key2 not found");
-            assert_eq!(node2.values[0], b"value2".to_vec());
+            assert_eq!(get_value(&node2, b"key2"), b"value2".to_vec());
+
             let node3 = tree.find(&b"key3".to_vec()).expect("key3 not found");
-            assert_eq!(node3.values[0], b"value3".to_vec());
+            assert_eq!(get_value(&node3, b"key3"), b"value3".to_vec());
+
             println!("✓ All values retrieved correctly");
 
             println!("\n✓ All S3 storage tests passed!");
@@ -396,10 +433,9 @@ mod tests {
         rt.block_on(async {
             let endpoint_url = std::env::var("S3_ENDPOINT_URL")
                 .unwrap_or_else(|_| "http://localhost:4566".to_string());
-            let bucket = std::env::var("S3_BUCKET")
-                .unwrap_or_else(|_| "prollytree-test".to_string());
-            let region = std::env::var("AWS_REGION")
-                .unwrap_or_else(|_| "us-east-1".to_string());
+            let bucket =
+                std::env::var("S3_BUCKET").unwrap_or_else(|_| "prollytree-test".to_string());
+            let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "us-east-1".to_string());
 
             println!("Testing tree persistence to S3");
             println!("  Endpoint: {}", endpoint_url);
@@ -409,8 +445,8 @@ mod tests {
             let config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .region(aws_sdk_s3::config::Region::new(region));
             let sdk_config = config_loader.load().await;
-            let s3_config_builder = aws_sdk_s3::config::Builder::from(&sdk_config)
-                .endpoint_url(&endpoint_url);
+            let s3_config_builder =
+                aws_sdk_s3::config::Builder::from(&sdk_config).endpoint_url(&endpoint_url);
             let client = aws_sdk_s3::Client::from_conf(s3_config_builder.build());
 
             // Create tree with S3 storage
@@ -421,11 +457,7 @@ mod tests {
             let prefix = format!("test/persistence-test-{}/", timestamp);
             println!("Using prefix: {}", prefix);
 
-            let storage = S3NodeStorage::<32>::new(
-                client.clone(),
-                bucket.clone(),
-                prefix.clone()
-            );
+            let storage = S3NodeStorage::<32>::new(client.clone(), bucket.clone(), prefix.clone());
 
             let config = TreeConfig::default();
             let mut tree1 = ProllyTree::new(storage, config.clone());
@@ -433,7 +465,10 @@ mod tests {
             // Insert data
             println!("Inserting 10 key-value pairs...");
             for i in 0..10 {
-                tree1.insert(format!("key{}", i).into_bytes(), format!("value{}", i).into_bytes());
+                tree1.insert(
+                    format!("key{}", i).into_bytes(),
+                    format!("value{}", i).into_bytes(),
+                );
             }
 
             let root_hash = tree1.get_root_hash().unwrap();
@@ -455,7 +490,10 @@ mod tests {
                     for obj in output.contents() {
                         println!("  - {}", obj.key().unwrap_or("unknown"));
                     }
-                    assert!(count > 0, "Expected nodes to be written to S3 but found none!");
+                    assert!(
+                        count > 0,
+                        "Expected nodes to be written to S3 but found none!"
+                    );
                 }
                 Err(e) => {
                     panic!("Failed to list S3 objects: {:?}", e);
@@ -464,11 +502,7 @@ mod tests {
 
             // Create new tree instance from same storage to verify persistence
             println!("\nCreating new tree instance from persisted data...");
-            let storage2 = S3NodeStorage::<32>::new(
-                client,
-                bucket,
-                prefix
-            );
+            let storage2 = S3NodeStorage::<32>::new(client, bucket, prefix);
 
             let mut config2 = TreeConfig::default();
             config2.root_hash = Some(root_hash);
@@ -481,11 +515,22 @@ mod tests {
 
             // Verify data
             println!("Verifying persisted data...");
+
+            // Helper to extract value from node
+            let get_value = |node: &ProllyNode<32>, key: &[u8]| -> Vec<u8> {
+                node.keys
+                    .iter()
+                    .position(|k| k.as_slice() == key)
+                    .map(|idx| node.values[idx].clone())
+                    .expect("Key not found in node")
+            };
+
             for i in 0..10 {
                 let key = format!("key{}", i).into_bytes();
                 let expected = format!("value{}", i).into_bytes();
                 let node = tree2.find(&key).expect(&format!("key{} not found", i));
-                assert_eq!(node.values[0], expected, "Value mismatch for key{}", i);
+                let actual = get_value(&node, &key);
+                assert_eq!(actual, expected, "Value mismatch for key{}", i);
             }
             println!("✓ All 10 values verified from persisted tree");
 
