@@ -20,7 +20,8 @@ import sqlite3
 import json
 import time
 import sys
-from prolly_tree import ProllyTree
+import argparse
+from prolly_tree import ProllyTree, create_store_from_spec
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
@@ -35,7 +36,7 @@ def get_primary_key(cursor, table_name):
     # If no primary key, use rowid
     return "rowid"
 
-def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000):
+def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:'):
     """
     Import all tables from SQLite into ProllyTree.
 
@@ -44,6 +45,7 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000):
         pattern: ProllyTree split pattern (default 0.0001)
         seed: Random seed for rolling hash
         batch_size: Number of rows to insert per batch
+        store_spec: Store specification (:memory:, file://path, s3://bucket)
     """
     print(f"Opening database: {db_path}")
     conn = sqlite3.connect(db_path)
@@ -54,9 +56,10 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000):
     tables = [row[0] for row in cursor.fetchall()]
     print(f"Found {len(tables)} tables: {', '.join(tables)}")
 
-    # Initialize ProllyTree
-    print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed})")
-    tree = ProllyTree(pattern=pattern, seed=seed)
+    # Initialize ProllyTree with specified store
+    print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed}, store={store_spec})")
+    store = create_store_from_spec(store_spec)
+    tree = ProllyTree(pattern=pattern, seed=seed, store=store)
 
     total_rows = 0
     total_start = time.time()
@@ -155,7 +158,8 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000):
     print(f"Total time: {total_time:.2f}s")
     print(f"Overall rate: {total_rate:,.0f} rows/sec")
     print(f"\nTree statistics:")
-    print(f"  Total nodes in storage: {len(tree.nodes):,}")
+    print(f"  Store type: {type(tree.store).__name__}")
+    print(f"  Total nodes in storage: {tree.store.count_nodes():,}")
 
     # Verify we can read some data
     print(f"\nVerifying data...")
@@ -170,17 +174,41 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000):
     return tree
 
 if __name__ == "__main__":
-    import sys
+    parser = argparse.ArgumentParser(
+        description='Import SQLite database into ProllyTree',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Import to memory
+  python sqlite_import.py database.sqlite
 
-    if len(sys.argv) < 2:
-        print("Usage: python sqlite_import.py <database.sqlite> [pattern] [seed]")
-        print("\nExample:")
-        print("  python sqlite_import.py BC00ALL-26SP.sqlite")
-        print("  python sqlite_import.py BC00ALL-26SP.sqlite 0.0001 42")
-        sys.exit(1)
+  # Import to filesystem
+  python sqlite_import.py database.sqlite --store file:///tmp/prolly_data
 
-    db_path = sys.argv[1]
-    pattern = float(sys.argv[2]) if len(sys.argv) > 2 else 0.0001
-    seed = int(sys.argv[3]) if len(sys.argv) > 3 else 42
+  # Import with custom pattern and seed
+  python sqlite_import.py database.sqlite --pattern 0.0001 --seed 42
 
-    tree = import_sqlite(db_path, pattern=pattern, seed=seed)
+  # Import to S3 (not yet implemented)
+  python sqlite_import.py database.sqlite --store s3://my-bucket
+        '''
+    )
+
+    parser.add_argument('database', help='Path to SQLite database file')
+    parser.add_argument('--pattern', type=float, default=0.0001,
+                        help='Split pattern (default: 0.0001)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for rolling hash (default: 42)')
+    parser.add_argument('--store', default=':memory:',
+                        help='Store spec: :memory:, file:///path, or s3://bucket (default: :memory:)')
+    parser.add_argument('--batch-size', type=int, default=1000,
+                        help='Batch size for inserts (default: 1000)')
+
+    args = parser.parse_args()
+
+    tree = import_sqlite(
+        args.database,
+        pattern=args.pattern,
+        seed=args.seed,
+        batch_size=args.batch_size,
+        store_spec=args.store
+    )

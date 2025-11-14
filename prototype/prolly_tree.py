@@ -21,6 +21,105 @@ Features:
 """
 
 import hashlib
+from typing import Protocol, Optional
+import json
+import os
+
+class Store(Protocol):
+    """Protocol for node storage backends."""
+
+    def put_node(self, node_hash: str, node: 'Node') -> None:
+        """Store a node by its hash."""
+        ...
+
+    def get_node(self, node_hash: str) -> Optional['Node']:
+        """Retrieve a node by its hash. Returns None if not found."""
+        ...
+
+    def count_nodes(self) -> int:
+        """Return the total number of nodes in storage."""
+        ...
+
+
+class MemoryStore:
+    """In-memory node storage using a dictionary."""
+
+    def __init__(self):
+        self.nodes = {}
+
+    def put_node(self, node_hash: str, node: 'Node') -> None:
+        """Store a node in memory."""
+        self.nodes[node_hash] = node
+
+    def get_node(self, node_hash: str) -> Optional['Node']:
+        """Retrieve a node from memory."""
+        return self.nodes.get(node_hash)
+
+    def count_nodes(self) -> int:
+        """Return the total number of nodes in storage."""
+        return len(self.nodes)
+
+
+class FileSystemStore:
+    """File system-based node storage."""
+
+    def __init__(self, base_path: str):
+        """
+        Initialize filesystem storage.
+
+        Args:
+            base_path: Directory to store nodes in
+        """
+        self.base_path = base_path
+        os.makedirs(base_path, exist_ok=True)
+
+    def _node_path(self, node_hash: str) -> str:
+        """Get the file path for a node hash."""
+        # Use first 2 chars as subdirectory for better filesystem performance
+        subdir = node_hash[:2]
+        dir_path = os.path.join(self.base_path, subdir)
+        os.makedirs(dir_path, exist_ok=True)
+        return os.path.join(dir_path, node_hash)
+
+    def _serialize_node(self, node: 'Node') -> str:
+        """Serialize a node to JSON."""
+        return json.dumps({
+            'is_leaf': node.is_leaf,
+            'keys': node.keys,
+            'values': node.values
+        })
+
+    def _deserialize_node(self, data: str) -> 'Node':
+        """Deserialize a node from JSON."""
+        obj = json.loads(data)
+        node = Node(is_leaf=obj['is_leaf'])
+        node.keys = obj['keys']
+        node.values = obj['values']
+        return node
+
+    def put_node(self, node_hash: str, node: 'Node') -> None:
+        """Store a node to filesystem."""
+        path = self._node_path(node_hash)
+        with open(path, 'w') as f:
+            f.write(self._serialize_node(node))
+
+    def get_node(self, node_hash: str) -> Optional['Node']:
+        """Retrieve a node from filesystem."""
+        path = self._node_path(node_hash)
+        if not os.path.exists(path):
+            return None
+        with open(path, 'r') as f:
+            return self._deserialize_node(f.read())
+
+    def count_nodes(self) -> int:
+        """Return the total number of nodes in storage."""
+        count = 0
+        for subdir in os.listdir(self.base_path):
+            subdir_path = os.path.join(self.base_path, subdir)
+            if os.path.isdir(subdir_path):
+                count += len([f for f in os.listdir(subdir_path) if os.path.isfile(os.path.join(subdir_path, f))])
+        return count
+
 
 class Node:
     def __init__(self, is_leaf=True):
@@ -35,7 +134,7 @@ class Node:
             return f"Internal(keys={self.keys}, children={len(self.values)})"
 
 class ProllyTree:
-    def __init__(self, pattern=0.25, seed=42):
+    def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None):
         """
         Initialize ProllyTree with content-based splitting.
 
@@ -43,12 +142,13 @@ class ProllyTree:
             pattern: Split probability (0.0 to 1.0). Lower = larger nodes.
                     Default 0.25 means ~4 entries per node on average.
             seed: Seed for rolling hash function for reproducibility
+            store: Storage backend (defaults to MemoryStore if not provided)
         """
         self.pattern = int(pattern * (2**32))  # Convert to uint32 threshold
         self.seed = seed
+        self.store = store if store is not None else MemoryStore()
 
         self.root = Node(is_leaf=True)
-        self.nodes = {}  # Content-addressed storage: hash -> node
 
         # Operation tracking
         self.ops = []
@@ -104,8 +204,9 @@ class ProllyTree:
         node_hash = self._hash_node(node)
 
         # Only store if not already present (deduplication)
-        if node_hash not in self.nodes:
-            self.nodes[node_hash] = node
+        existing = self.store.get_node(node_hash)
+        if existing is None:
+            self.store.put_node(node_hash, node)
             self.ops.append(('create_node', 'leaf' if node.is_leaf else 'internal', len(node.keys)))
         else:
             self.ops.append(('reuse_existing', node_hash))
@@ -115,7 +216,7 @@ class ProllyTree:
     def _get_node(self, node_hash):
         """Retrieve node by hash"""
         self.ops.append(('read_node', node_hash))
-        return self.nodes.get(node_hash)
+        return self.store.get_node(node_hash)
 
     def insert_batch(self, mutations, verbose=True):
         """
@@ -426,12 +527,9 @@ class ProllyTree:
         print(f"\n{'='*60}")
         print(f"TREE {label}:")
         print(f"{'='*60}")
-        # Find the hash for the root node
-        root_hash = None
-        for h, n in self.nodes.items():
-            if n is self.root:
-                root_hash = h
-                break
+        # For the root, we don't have a hash readily available
+        # We'd need to compute it or track it separately
+        root_hash = self._hash_node(self.root)
         self._print_node(self.root, root_hash, prefix="", is_last=True)
 
     def _print_node(self, node, node_hash, prefix="", is_last=True, reused_hashes=None):
@@ -496,6 +594,31 @@ class ProllyTree:
                 self._collect_leaves(child, result)
 
 
+def create_store_from_spec(spec: str) -> Store:
+    """
+    Create a store from a specification string.
+
+    Args:
+        spec: Store specification, one of:
+            - ':memory:' - in-memory storage
+            - 'file:///path/to/dir' - filesystem storage
+            - 's3://bucket-name' - S3 storage (not yet implemented)
+
+    Returns:
+        Store instance
+    """
+    if spec == ':memory:':
+        return MemoryStore()
+    elif spec.startswith('file://'):
+        # Remove 'file://' prefix
+        path = spec[7:]
+        return FileSystemStore(path)
+    elif spec.startswith('s3://'):
+        raise NotImplementedError("S3 storage not yet implemented")
+    else:
+        raise ValueError(f"Invalid store spec: {spec}")
+
+
 def test_insert(old_tree, mutations, expected_contents, verbose=True):
     """
     Helper function to test batch insert (functional style).
@@ -509,26 +632,22 @@ def test_insert(old_tree, mutations, expected_contents, verbose=True):
     Returns:
         (new_tree, stats): New ProllyTree instance and operation statistics
     """
-    # Capture existing node hashes before insert
-    old_node_hashes = set(old_tree.nodes.keys())
+    # Capture existing node hashes before insert (if using MemoryStore)
+    old_node_hashes = set()
+    if isinstance(old_tree.store, MemoryStore):
+        old_node_hashes = set(old_tree.store.nodes.keys())
 
     if verbose:
         print(f"\n{'-'*60}")
         print(f"INSERTING: {mutations}")
         print(f"{'-'*60}")
         print("\nTREE BEFORE INSERT:")
-        # Find root hash
-        root_hash = None
-        for h, n in old_tree.nodes.items():
-            if n is old_tree.root:
-                root_hash = h
-                break
+        root_hash = old_tree._hash_node(old_tree.root)
         old_tree._print_node(old_tree.root, root_hash, prefix="", is_last=True)
 
-    # Create a new tree by copying the old one
-    new_tree = ProllyTree(pattern=old_tree.pattern / (2**32), seed=old_tree.seed)
+    # Create a new tree that shares the same store
+    new_tree = ProllyTree(pattern=old_tree.pattern / (2**32), seed=old_tree.seed, store=old_tree.store)
     new_tree.root = old_tree.root  # Share the root (immutable)
-    new_tree.nodes = old_tree.nodes.copy()  # Share the node storage
 
     # Perform the insert (this will create new nodes but won't modify old ones)
     stats = new_tree.insert_batch(mutations, verbose=verbose)
@@ -539,12 +658,7 @@ def test_insert(old_tree, mutations, expected_contents, verbose=True):
 
     if verbose:
         print("\nTREE AFTER INSERT:")
-        # Find root hash
-        root_hash = None
-        for h, n in new_tree.nodes.items():
-            if n is new_tree.root:
-                root_hash = h
-                break
+        root_hash = new_tree._hash_node(new_tree.root)
         new_tree._print_node(new_tree.root, root_hash, prefix="", is_last=True, reused_hashes=old_node_hashes)
 
         print(f"\n{'-'*60}")
