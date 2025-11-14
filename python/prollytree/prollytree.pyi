@@ -14,6 +14,29 @@ class TreeConfig:
         pattern: int = 0
     ) -> None: ...
 
+class S3Config:
+    """Configuration for S3 storage backend"""
+
+    def __init__(
+        self,
+        bucket: str,
+        prefix: str = "",
+        region: Optional[str] = None,
+        endpoint_url: Optional[str] = None,
+        cache_size: int = 1000
+    ) -> None:
+        """
+        Create S3 storage configuration.
+
+        Args:
+            bucket: S3 bucket name
+            prefix: Key prefix for all objects (e.g., "prollytree/")
+            region: AWS region (e.g., "us-east-1"). Uses default if not specified.
+            endpoint_url: Custom S3 endpoint URL for LocalStack, MinIO, etc.
+            cache_size: LRU cache size for frequently accessed nodes (default: 1000)
+        """
+        ...
+
 class ProllyTree:
     """A probabilistic tree for efficient storage and retrieval of ordered data"""
 
@@ -21,15 +44,17 @@ class ProllyTree:
         self,
         storage_type: str = "memory",
         path: Optional[str] = None,
-        config: Optional[TreeConfig] = None
+        config: Optional[TreeConfig] = None,
+        s3_config: Optional[S3Config] = None
     ) -> None:
         """
         Create a new ProllyTree instance.
 
         Args:
-            storage_type: Type of storage to use ("memory" or "file")
+            storage_type: Type of storage to use ("memory", "file", or "s3")
             path: Path for file storage (required if storage_type is "file")
             config: Tree configuration (uses defaults if not provided)
+            s3_config: S3 configuration (required if storage_type is "s3")
         """
         ...
 
