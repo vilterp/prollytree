@@ -151,9 +151,11 @@ def import_table(
     tree: ProllyTree,
     table_name: str,
     batch_size: int = 1000,
-    verbose: bool = True
+    verbose: bool = True,
+    max_rows: int = None
 ) -> int:
     """Import a single table into the ProllyTree."""
+    import time
 
     # Get table metadata
     info = get_table_info(cursor, table_name)
@@ -178,6 +180,7 @@ def import_table(
     # Fetch and insert in batches
     total_rows = 0
     batch = []
+    start_time = time.time()
 
     while True:
         rows = cursor.fetchmany(batch_size)
@@ -207,15 +210,25 @@ def import_table(
             tree.insert_batch(byte_batch)
             total_rows += len(batch)
 
-            # Print root hash after each batch
+            # Print progress with rate
             if verbose:
+                elapsed = time.time() - start_time
+                rate = total_rows / elapsed if elapsed > 0 else 0
                 root_hash = tree.get_root_hash().hex()
-                print(f"  Inserted {total_rows} rows... Root: {root_hash[:16]}...")
+                print(f"  Inserted {total_rows} rows... ({rate:.1f} rows/sec) Root: {root_hash[:16]}...")
 
             batch = []
 
+            # Check max_rows limit
+            if max_rows and total_rows >= max_rows:
+                if verbose:
+                    print(f"  Reached max_rows limit of {max_rows}")
+                break
+
     if verbose:
-        print(f"  Inserted {total_rows} rows - DONE")
+        elapsed = time.time() - start_time
+        rate = total_rows / elapsed if elapsed > 0 else 0
+        print(f"  Inserted {total_rows} rows - DONE ({rate:.1f} rows/sec)")
 
     return total_rows
 
@@ -293,7 +306,8 @@ def cmd_import(args):
                 tree,
                 table,
                 batch_size=args.batch_size,
-                verbose=not args.quiet
+                verbose=not args.quiet,
+                max_rows=args.max_rows
             )
             total_rows += rows
         except Exception as e:
@@ -433,6 +447,12 @@ def main():
         "--quiet",
         action="store_true",
         help="Suppress progress output (only print final root hash)"
+    )
+    import_parser.add_argument(
+        "--max-rows",
+        type=int,
+        help="Maximum number of rows to import per table (for testing)",
+        default=None
     )
     import_parser.set_defaults(func=cmd_import)
 
