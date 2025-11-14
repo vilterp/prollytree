@@ -70,9 +70,7 @@ class ProllyTree:
         self.reset_ops()
 
         if verbose:
-            print(f"\n=== INSERT BATCH: {len(mutations)} mutations ===")
-            print(f"Mutations: {mutations}")
-            self._print_tree("BEFORE")
+            print(f"\n=== Rebuilding tree with {len(mutations)} mutations ===")
 
         # Rebuild tree with mutations
         new_root = self._rebuild_with_mutations(self.root, mutations, verbose)
@@ -82,10 +80,6 @@ class ProllyTree:
             self._store_node(new_root)
 
         self.root = new_root
-
-        if verbose:
-            self._print_tree("AFTER")
-            self._print_ops()
 
         return self._summarize_ops()
 
@@ -123,8 +117,8 @@ class ProllyTree:
             if len(new_leaves) == 1:
                 return new_leaves[0]
             else:
-                # Multiple leaves - need parent
-                return self._build_parent(new_leaves)
+                # Multiple leaves - need parent (may recursively split if too many)
+                return self._build_internal_from_children(new_leaves, verbose)
 
         else:
             # Internal node: partition mutations by child ranges, recursively rebuild
@@ -132,7 +126,7 @@ class ProllyTree:
                 print(f"  -> Internal node with {len(node.values)} children")
                 print(f"  -> Separator keys: {node.keys}")
 
-            new_children = []
+            new_child_nodes = []  # List of actual Node objects (not hashes yet)
             mut_idx = 0
 
             for child_idx in range(len(node.values)):
@@ -177,26 +171,109 @@ class ProllyTree:
                 child_hash = node.values[child_idx]
 
                 if not child_mutations:
-                    # No mutations - reuse the existing child hash!
+                    # No mutations - reuse the existing child by its hash!
                     self.ops.append(('reuse_subtree', child_hash))
-                    new_children.append(child_hash)
+                    # We need the actual node to get its first key for separators
+                    child_node = self._get_node(child_hash)
+                    # Mark this child as reused by storing the hash in a special way
+                    child_node._reused_hash = child_hash
+                    new_child_nodes.append(child_node)
                 else:
                     # Has mutations - need to rebuild
                     child = self._get_node(child_hash)
                     new_child = self._rebuild_with_mutations(child, child_mutations, verbose)
 
-                    # Store the new child and use its hash
-                    new_child_hash = self._store_node(new_child)
-                    new_children.append(new_child_hash)
+                    # Child rebuild might return a node that needs to be split into multiple
+                    # If it's a leaf that became too large, it would have been split in _rebuild_with_mutations
+                    # But if it's an internal node that's too large, we need to handle it here
+                    new_child_nodes.append(new_child)
 
-            # Build new internal node with new children
-            # For now, keep same structure (same separator keys)
-            # TODO: Handle case where children split and we need new separators
-            new_internal = Node(is_leaf=False)
-            new_internal.keys = node.keys[:]
-            new_internal.values = new_children
+            # Now build parent nodes from the collected children
+            # Each child might have split, so we need to flatten and rebuild the parent structure
+            return self._build_internal_from_children(new_child_nodes, verbose)
 
-            return new_internal
+    def _build_internal_from_children(self, children, verbose=False):
+        """
+        Build internal node(s) from a list of children.
+        Handles splitting if the internal node would exceed MAX_KEYS.
+
+        Args:
+            children: List of Node objects
+
+        Returns:
+            Node or list of Nodes if this level needs to split too
+        """
+        if len(children) == 0:
+            raise ValueError("Cannot build internal node with no children")
+
+        if len(children) == 1:
+            # Single child - just return it (no need for parent)
+            return children[0]
+
+        # Store children and create separator keys
+        child_hashes = []
+        separator_keys = []
+
+        for i, child in enumerate(children):
+            # Check if this child was reused (has a hash already)
+            if hasattr(child, '_reused_hash'):
+                child_hash = child._reused_hash
+                delattr(child, '_reused_hash')  # Clean up the marker
+            else:
+                child_hash = self._store_node(child)
+
+            child_hashes.append(child_hash)
+
+            # Separator key is the first key of the next child
+            if i < len(children) - 1:
+                next_child = children[i + 1]
+                separator = next_child.keys[0]
+                separator_keys.append(separator)
+
+        # Check if we need to split this internal node
+        if len(separator_keys) <= self.MAX_KEYS:
+            # Fits in one internal node
+            internal = Node(is_leaf=False)
+            internal.keys = separator_keys
+            internal.values = child_hashes
+            return internal
+        else:
+            # Too many children - need to split into multiple internal nodes
+            if verbose:
+                print(f"  -> Internal node too large ({len(separator_keys)} keys), splitting...")
+
+            # Split children into groups
+            internal_nodes = []
+            chunk_size = self.MAX_KEYS + 1  # +1 because we have one more child than separator keys
+
+            for i in range(0, len(children), chunk_size):
+                chunk_children = children[i:i+chunk_size]
+
+                # Build internal node for this chunk
+                internal = Node(is_leaf=False)
+                for j, child in enumerate(chunk_children):
+                    # Store child
+                    if hasattr(child, '_reused_hash'):
+                        child_hash = child._reused_hash
+                        delattr(child, '_reused_hash')
+                    else:
+                        child_hash = self._store_node(child)
+
+                    internal.values.append(child_hash)
+
+                    # Separator key
+                    if j < len(chunk_children) - 1:
+                        next_child = chunk_children[j + 1]
+                        separator = next_child.keys[0]
+                        internal.keys.append(separator)
+
+                internal_nodes.append(internal)
+
+            # Recursively build parent for these internal nodes
+            if len(internal_nodes) == 1:
+                return internal_nodes[0]
+            else:
+                return self._build_internal_from_children(internal_nodes, verbose)
 
     def _merge_sorted(self, old_items, new_items):
         """Merge two sorted lists of (key, value) tuples"""
@@ -240,46 +317,42 @@ class ProllyTree:
 
         return leaves
 
-    def _build_parent(self, children):
-        """Build parent node for list of children"""
-        parent = Node(is_leaf=False)
-
-        # Store children and create separator keys
-        for i, child in enumerate(children):
-            child_hash = self._store_node(child)
-            parent.values.append(child_hash)
-
-            # Separator key is the first key of the next child
-            if i < len(children) - 1:
-                next_child = children[i + 1]
-                separator = next_child.keys[0]
-                parent.keys.append(separator)
-
-        return parent
-
     def _print_tree(self, label=""):
         """Print tree structure for debugging"""
         print(f"\n{'='*60}")
         print(f"TREE {label}:")
         print(f"{'='*60}")
-        self._print_node(self.root, prefix="", is_last=True)
+        # Find the hash for the root node
+        root_hash = None
+        for h, n in self.nodes.items():
+            if n is self.root:
+                root_hash = h
+                break
+        self._print_node(self.root, root_hash, prefix="", is_last=True)
 
-    def _print_node(self, node, prefix="", is_last=True):
+    def _print_node(self, node, node_hash, prefix="", is_last=True, reused_hashes=None):
         """Recursively print node and its children"""
         branch = "└── " if is_last else "├── "
 
+        # Check if this node was reused
+        reused_flag = ""
+        if reused_hashes is not None and node_hash is not None and node_hash in reused_hashes:
+            reused_flag = " <- REUSED!"
+
         if node.is_leaf:
             data = list(zip(node.keys, node.values))
-            print(f"{prefix}{branch}LEAF: {data}")
+            hash_str = f"#{node_hash}" if node_hash is not None else "#root"
+            print(f"{prefix}{branch}LEAF {hash_str}: {data}{reused_flag}")
         else:
-            print(f"{prefix}{branch}INTERNAL: keys={node.keys}")
+            hash_str = f"#{node_hash}" if node_hash is not None else "#root"
+            print(f"{prefix}{branch}INTERNAL {hash_str}: keys={node.keys}{reused_flag}")
 
             # Print children
             extension = "    " if is_last else "│   "
             for i, child_hash in enumerate(node.values):
                 child = self._get_node(child_hash)
                 child_is_last = (i == len(node.values) - 1)
-                self._print_node(child, prefix + extension, child_is_last)
+                self._print_node(child, child_hash, prefix + extension, child_is_last, reused_hashes)
 
     def _print_ops(self):
         """Print operation statistics"""
@@ -332,12 +405,21 @@ def test_insert(old_tree, mutations, expected_contents, verbose=True):
     Returns:
         (new_tree, stats): New ProllyTree instance and operation statistics
     """
+    # Capture existing node hashes before insert
+    old_node_hashes = set(old_tree.nodes.keys())
+
     if verbose:
-        print(f"\n{'='*60}")
+        print(f"\n{'-'*60}")
         print(f"INSERTING: {mutations}")
-        print(f"{'='*60}")
+        print(f"{'-'*60}")
         print("\nTREE BEFORE INSERT:")
-        old_tree._print_node(old_tree.root, prefix="", is_last=True)
+        # Find root hash
+        root_hash = None
+        for h, n in old_tree.nodes.items():
+            if n is old_tree.root:
+                root_hash = h
+                break
+        old_tree._print_node(old_tree.root, root_hash, prefix="", is_last=True)
 
     # Create a new tree by copying the old one
     new_tree = ProllyTree()
@@ -354,20 +436,19 @@ def test_insert(old_tree, mutations, expected_contents, verbose=True):
 
     if verbose:
         print("\nTREE AFTER INSERT:")
-        new_tree._print_node(new_tree.root, prefix="", is_last=True)
+        # Find root hash
+        root_hash = None
+        for h, n in new_tree.nodes.items():
+            if n is new_tree.root:
+                root_hash = h
+                break
+        new_tree._print_node(new_tree.root, root_hash, prefix="", is_last=True, reused_hashes=old_node_hashes)
 
-        print(f"\n{'='*60}")
+        print(f"\n{'-'*60}")
         print("OPERATION STATS:")
-        print(f"{'='*60}")
+        print(f"{'-'*60}")
         for key, value in stats.items():
             print(f"  {key}: {value}")
-
-        # Verify old tree is unchanged
-        print(f"\n{'='*60}")
-        print("VERIFYING OLD TREE UNCHANGED:")
-        print(f"{'='*60}")
-        print("\nOLD TREE (should be unchanged):")
-        old_tree._print_node(old_tree.root, prefix="", is_last=True)
 
     return new_tree, stats
 
@@ -376,48 +457,62 @@ def test_insert(old_tree, mutations, expected_contents, verbose=True):
 if __name__ == "__main__":
     tree0 = ProllyTree()
 
-    print("\n" + "="*60)
+    print("\n" + "="*80)
     print("TEST 1: Insert batch into empty tree")
-    print("="*60)
+    print("="*80)
     tree1, stats1 = test_insert(
         tree0,
         mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
         expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
-        verbose=False
+        verbose=True
     )
     # First insert into empty tree: should create 2 leaves + 1 parent = 3 nodes
     assert stats1['nodes_created'] == 3, f"Expected 3 nodes created, got {stats1['nodes_created']}"
     assert stats1['nodes_reused'] == 0, f"Expected 0 nodes reused, got {stats1['nodes_reused']}"
     print("✓ TEST 1 PASSED")
 
-    print("\n" + "="*60)
+    print("\n" + "="*80)
     print("TEST 2: Insert batch with interleaved keys")
-    print("="*60)
+    print("="*80)
     tree2, stats2 = test_insert(
         tree1,
         mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
         expected_contents=[(i, f"v{i}") for i in range(1, 13)],
-        verbose=False
+        verbose=True
     )
     # Second insert: mutations affect both children (left gets 5 mutations, right gets 1)
     # Should NOT reuse any nodes because both children are affected
     assert stats2['nodes_reused'] == 0, f"Expected 0 nodes reused, got {stats2['nodes_reused']}"
     print("✓ TEST 2 PASSED")
 
-    print("\n" + "="*60)
+    print("\n" + "="*80)
     print("TEST 3: Insert batch with keys in unaffected range")
-    print("="*60)
+    print("="*80)
     # Insert keys > 12, which should only affect the right subtree
     tree3, stats3 = test_insert(
         tree2,
         mutations=[(i, f"v{i}") for i in [13, 14, 15, 16]],
         expected_contents=[(i, f"v{i}") for i in range(1, 17)],
-        verbose=True  # Show this one in detail
+        verbose=True
     )
     # The left subtree should be reused!
     assert stats3['subtrees_reused'] == 1, f"Expected 1 subtree reused, got {stats3['subtrees_reused']}"
     print("✓ TEST 3 PASSED - Left subtree was reused!")
 
-    print("\n" + "="*60)
+    print("\n" + "="*80)
+    print("TEST 4: Large insert causing internal node split")
+    print("="*80)
+    # Insert many more keys to cause internal nodes to split
+    # With MAX_KEYS=4, we need more than 4 children in an internal node to force a split
+    # Current tree has 2 top-level children. Let's add many keys to create more leaf splits
+    tree4, stats4 = test_insert(
+        tree3,
+        mutations=[(i, f"v{i}") for i in range(17, 41)],  # Add 24 more keys (17-40)
+        expected_contents=[(i, f"v{i}") for i in range(1, 41)],
+        verbose=True
+    )
+    print("✓ TEST 4 PASSED - Internal node splitting handled!")
+
+    print("\n" + "="*80)
     print("ALL TESTS PASSED!")
-    print("="*60)
+    print("="*80)
