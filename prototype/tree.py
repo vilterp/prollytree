@@ -116,13 +116,19 @@ class ProllyTree:
         mutations: sorted list of (key, value) tuples
         Returns: dict with operation stats
         """
+        # Track cache stats before this batch (if using CachedFSStore)
+        from store import CachedFSStore
+        cache_stats_before = None
+        if isinstance(self.store, CachedFSStore):
+            cache_stats_before = {
+                'hits': self.store.cache_hits,
+                'misses': self.store.cache_misses
+            }
+
         self.reset_ops()
 
-        if verbose:
-            print(f"\n=== Rebuilding tree with {len(mutations)} mutations ===")
-
-        # Rebuild tree with mutations
-        new_root = self._rebuild_with_mutations(self.root, mutations, verbose)
+        # Rebuild tree with mutations (always quiet during rebuild)
+        new_root = self._rebuild_with_mutations(self.root, mutations, verbose=False)
 
         # Store the new root (unless it was reused)
         if new_root is not self.root:
@@ -130,7 +136,23 @@ class ProllyTree:
 
         self.root = new_root
 
-        return self._summarize_ops()
+        stats = self._summarize_ops()
+
+        # Print single-line batch summary
+        if verbose:
+            summary_parts = [f"Inserted {len(mutations)} rows"]
+            summary_parts.append(f"{stats['nodes_created']} new nodes created")
+
+            # Add cache stats if using CachedFSStore
+            if isinstance(self.store, CachedFSStore) and cache_stats_before:
+                hits_delta = self.store.cache_hits - cache_stats_before['hits']
+                misses_delta = self.store.cache_misses - cache_stats_before['misses']
+                summary_parts.append(f"{hits_delta} cache hits")
+                summary_parts.append(f"{misses_delta} cache misses")
+
+            print("; ".join(summary_parts))
+
+        return stats
 
     def _rebuild_with_mutations(self, node, mutations, verbose=True):
         """
@@ -138,7 +160,8 @@ class ProllyTree:
         Returns: new node (possibly with different structure)
         """
         if verbose:
-            print(f"\n_rebuild_with_mutations(node={node}, mutations={mutations})")
+            node_type = 'Leaf' if node.is_leaf else 'Internal'
+            print(f"\n_rebuild_with_mutations: {node_type} node with {len(node.keys)} keys, {len(mutations)} mutations")
 
         if not mutations:
             # No mutations for this subtree - REUSE it!
@@ -150,13 +173,13 @@ class ProllyTree:
         if node.is_leaf:
             # Leaf node: merge old data with mutations
             if verbose:
-                print(f"  -> Leaf node, merging...")
+                print(f"  -> Leaf node, merging {len(node.keys)} existing + {len(mutations)} new entries...")
             merged = self._merge_sorted(
                 list(zip(node.keys, node.values)),
                 mutations
             )
             if verbose:
-                print(f"  -> Merged data: {merged}")
+                print(f"  -> Merged to {len(merged)} total entries")
 
             # Build new leaf nodes (may split if too large)
             new_leaves = self._build_leaves(merged)
@@ -172,8 +195,7 @@ class ProllyTree:
         else:
             # Internal node: partition mutations by child ranges, recursively rebuild
             if verbose:
-                print(f"  -> Internal node with {len(node.values)} children")
-                print(f"  -> Separator keys: {node.keys}")
+                print(f"  -> Internal node with {len(node.values)} children, {len(node.keys)} separator keys")
 
             new_child_nodes = []  # List of actual Node objects (not hashes yet)
             mut_idx = 0
@@ -193,9 +215,6 @@ class ProllyTree:
                     upper = node.keys[child_idx]
                 else:
                     upper = None  # +infinity
-
-                if verbose:
-                    print(f"  -> Child {child_idx}: range [{lower}, {upper})")
 
                 # Collect mutations for this child
                 child_mutations = []

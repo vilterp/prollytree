@@ -37,7 +37,7 @@ def get_primary_key(cursor, table_name):
     # If no primary key, use rowid
     return "rowid"
 
-def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:', cache_size=None):
+def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:', cache_size=None, verbose_batches=False):
     """
     Import all tables from SQLite into ProllyTree.
 
@@ -128,8 +128,9 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
             # Sort mutations by key (required for prolly tree)
             mutations.sort(key=lambda x: x[0])
 
-            # Insert batch
-            tree.insert_batch(mutations, verbose=False)
+            # Insert batch (show verbose stats based on flag or every 10th batch)
+            show_verbose = verbose_batches or ((rows_processed // batch_size) % 10 == 0)
+            tree.insert_batch(mutations, verbose=show_verbose)
 
             rows_processed += len(rows)
             batch_time = time.time() - batch_start
@@ -215,6 +216,8 @@ Examples:
                         help='Batch size for inserts (default: 1000)')
     parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores (default: 1000)')
+    parser.add_argument('--verbose-batches', action='store_true',
+                        help='Show detailed statistics for every batch insert')
 
     args = parser.parse_args()
 
@@ -224,5 +227,6 @@ Examples:
         seed=args.seed,
         batch_size=args.batch_size,
         store_spec=args.store,
-        cache_size=args.cache_size
+        cache_size=args.cache_size,
+        verbose_batches=args.verbose_batches
     )

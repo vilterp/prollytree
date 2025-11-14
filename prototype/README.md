@@ -9,6 +9,7 @@ A Python implementation of ProllyTree with pluggable storage backends.
   - `Node` - Tree node class
   - `MemoryStore` - In-memory storage implementation
   - `FileSystemStore` - Filesystem-based persistent storage
+  - `CachedFSStore` - Filesystem storage with LRU cache
   - `create_store_from_spec()` - Create store from spec string
 
 - **`tree.py`** - Core ProllyTree implementation
@@ -33,7 +34,7 @@ A Python implementation of ProllyTree with pluggable storage backends.
 
 ```python
 from tree import ProllyTree
-from store import MemoryStore, FileSystemStore
+from store import MemoryStore, FileSystemStore, CachedFSStore
 
 # In-memory tree
 tree = ProllyTree(pattern=0.0001, seed=42)
@@ -44,6 +45,15 @@ result = tree.verify()
 store = FileSystemStore('/tmp/my_tree')
 tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 tree.insert_batch([(1, 'a'), (2, 'b')], verbose=False)
+
+# Cached filesystem tree (faster reads)
+store = CachedFSStore('/tmp/my_tree', cache_size=1000)
+tree = ProllyTree(pattern=0.0001, seed=42, store=store)
+tree.insert_batch([(1, 'a'), (2, 'b')], verbose=False)
+
+# Check cache performance
+stats = store.get_cache_stats()
+print(f"Cache hit rate: {stats['hit_rate']}")
 ```
 
 ### SQLite Import
@@ -54,6 +64,9 @@ python sqlite_import.py database.sqlite
 
 # Import to filesystem
 python sqlite_import.py database.sqlite --store file:///tmp/prolly_data
+
+# Import to cached filesystem (better performance)
+python sqlite_import.py database.sqlite --store cached-file:///tmp/prolly_data --cache-size 500
 
 # Custom parameters
 python sqlite_import.py database.sqlite --pattern 0.0001 --seed 42 --batch-size 1000
@@ -71,6 +84,7 @@ The `create_store_from_spec()` function accepts these formats:
 
 - `:memory:` - In-memory storage (default)
 - `file:///path/to/dir` - Filesystem storage
+- `cached-file:///path/to/dir` - Cached filesystem storage with LRU cache
 - `s3://bucket-name` - S3 storage (not yet implemented)
 
 ## Key Concepts
@@ -94,6 +108,25 @@ When inserting a batch of mutations:
 3. Reuse unchanged subtrees by reference
 
 This provides O(k log n) performance where k is the number of mutations, rather than O(n) for a full rebuild.
+
+### LRU Cache (CachedFSStore)
+
+The `CachedFSStore` combines filesystem persistence with an in-memory LRU (Least Recently Used) cache:
+
+**Write behavior:**
+- Writes go to both filesystem and cache
+- Cache evicts oldest entries when full
+
+**Read behavior:**
+- Check cache first (fast)
+- On cache miss, read from filesystem and add to cache
+- Move accessed items to end (mark as recently used)
+
+**Benefits:**
+- Faster reads for frequently accessed nodes
+- Reduced filesystem I/O
+- Configurable cache size to balance memory usage
+- Statistics tracking (hit rate, cache size, etc.)
 
 ## Performance
 
