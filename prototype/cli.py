@@ -227,19 +227,19 @@ def import_sqlite_database(db_path: str, store_spec: str = ':memory:',
     return db
 
 
-def dump_database(store_spec: str, prefix: str, root_hash: Optional[str] = None,
+def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
                   cache_size: Optional[int] = None, reconstruct: bool = True,
-                  limit: int = 100):
+                  limit: int = 100, prefix: Optional[str] = None):
     """
     Dump keys from the database.
 
     Args:
+        root_hash: Root hash to load
         store_spec: Store specification
-        prefix: Key prefix to dump
-        root_hash: Optional root hash to load
         cache_size: Cache size for cached stores
         reconstruct: Reconstruct row objects
         limit: Maximum number of rows to display
+        prefix: Optional key prefix to dump (default: dump all)
     """
     from tree import ProllyTree
 
@@ -257,21 +257,25 @@ def dump_database(store_spec: str, prefix: str, root_hash: Optional[str] = None,
     # Create tree
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
-    if root_hash:
-        print(f"Loading tree from root hash: {root_hash}")
-        tree.root = store.get_node(root_hash)
-        if not tree.root:
-            print(f"Error: Root hash {root_hash} not found in store")
-            return
-    else:
-        print("Warning: No root hash provided")
-        print("For accurate results, provide --root-hash parameter")
+    print(f"Loading tree from root hash: {root_hash}")
+    tree.root = store.get_node(root_hash)
+    if not tree.root:
+        print(f"Error: Root hash {root_hash} not found in store")
+        return
 
     # Create DB wrapper
     db = DB(store=store, pattern=0.0001, seed=42)
 
+    # Use prefix if provided, otherwise dump everything
+    prefix = prefix or ""
+
     # Check if this is a schema or data dump
     if prefix.startswith('/s/'):
+        # Dumping schemas
+        print(f"\nSchemas:")
+        for key, value in tree.items(prefix):
+            print(f"{key} => {value}")
+    elif prefix.startswith('/d/'):
         # Dumping schemas
         print(f"\nSchemas:")
         for key, value in tree.items(prefix):
@@ -496,21 +500,27 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
+  # Dump all data
+  python cli.py dump abc123
+
   # Dump schemas
-  python cli.py dump /s/ --store file:///tmp/data --root-hash abc123
+  python cli.py dump abc123 --prefix /s/
 
   # Dump table data
-  python cli.py dump /d/buses --store file:///tmp/data --root-hash abc123
+  python cli.py dump abc123 --prefix /d/buses
+
+  # Dump with custom store
+  python cli.py dump abc123 --prefix /s/ --store file:///tmp/data
 
   # Dump without reconstruction (raw arrays)
-  python cli.py dump /d/buses --store file:///tmp/data --root-hash abc123 --no-reconstruct
+  python cli.py dump abc123 --prefix /d/buses --no-reconstruct
         ''')
 
-    dump_parser.add_argument('prefix', help='Key prefix to dump')
+    dump_parser.add_argument('root_hash', help='Root hash of tree to dump')
+    dump_parser.add_argument('--prefix', type=str, default=None,
+                        help='Key prefix to filter dump (default: dump all)')
     dump_parser.add_argument('--store', default='cached-file://.prolly',
                         help='Store spec (default: cached-file://.prolly)')
-    dump_parser.add_argument('--root-hash', type=str, default=None,
-                        help='Root hash of tree to dump')
     dump_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
     dump_parser.add_argument('--no-reconstruct', action='store_true',
@@ -590,12 +600,12 @@ Examples:
         )
     elif args.command == 'dump':
         dump_database(
-            store_spec=args.store,
-            prefix=args.prefix,
             root_hash=args.root_hash,
+            store_spec=args.store,
             cache_size=args.cache_size,
             reconstruct=not args.no_reconstruct,
-            limit=args.limit
+            limit=args.limit,
+            prefix=args.prefix
         )
     elif args.command == 'diff':
         diff_trees(
