@@ -314,77 +314,32 @@ def dump_database(store_spec: str, prefix: str, root_hash: Optional[str] = None,
             print(f"(showing first {limit}, {count - limit:,} more keys omitted)")
 
 
-def diff_databases(old_db_path: str, new_db_path: str,
-                   store_spec: str = 'cached-file://.prolly',
-                   pattern: float = 0.0001, seed: int = 42,
-                   cache_size: Optional[int] = None,
-                   batch_size: int = 1000,
-                   tables_filter: Optional[List[str]] = None,
-                   verbose_batches: bool = False,
-                   limit: Optional[int] = None):
+def diff_trees(old_hash: str, new_hash: str,
+                store_spec: str = 'cached-file://.prolly',
+                cache_size: Optional[int] = None,
+                limit: Optional[int] = None):
     """
-    Import two SQLite databases and diff them.
+    Diff two trees by their root hashes.
 
     Args:
-        old_db_path: Path to old SQLite database
-        new_db_path: Path to new SQLite database
+        old_hash: Root hash of old tree
+        new_hash: Root hash of new tree
         store_spec: Store specification
-        pattern: ProllyTree split pattern
-        seed: Random seed
         cache_size: Cache size for cached stores
-        batch_size: Batch size for inserts
-        tables_filter: Optional list of specific tables to diff
-        verbose_batches: Show detailed batch statistics
         limit: Maximum number of diff events to display (None for all)
     """
     print("="*80)
-    print("DIFF: Importing and comparing two SQLite databases")
+    print("DIFF: Comparing two trees by hash")
     print("="*80)
+    print(f"Old hash: {old_hash}")
+    print(f"New hash: {new_hash}")
+    print(f"Store:    {store_spec}")
 
-    # Import old database
-    print("\n" + "="*80)
-    print("IMPORTING OLD DATABASE")
-    print("="*80)
-    db_old = import_sqlite_database(
-        db_path=old_db_path,
-        store_spec=store_spec,
-        pattern=pattern,
-        seed=seed,
-        cache_size=cache_size,
-        batch_size=batch_size,
-        tables_filter=tables_filter,
-        verbose_batches=verbose_batches
-    )
-    old_root_hash = db_old.get_root_hash()
-    print(f"\nOld database root hash: {old_root_hash}")
-
-    # Import new database
-    print("\n" + "="*80)
-    print("IMPORTING NEW DATABASE")
-    print("="*80)
-    db_new = import_sqlite_database(
-        db_path=new_db_path,
-        store_spec=store_spec,
-        pattern=pattern,
-        seed=seed,
-        cache_size=cache_size,
-        batch_size=batch_size,
-        tables_filter=tables_filter,
-        verbose_batches=verbose_batches
-    )
-    new_root_hash = db_new.get_root_hash()
-    print(f"\nNew database root hash: {new_root_hash}")
-
-    # Compute diff
-    print("\n" + "="*80)
-    print("COMPUTING DIFF")
-    print("="*80)
-
-    if old_root_hash == new_root_hash:
-        print("\nDatabases are identical (same root hash)")
+    if old_hash == new_hash:
+        print("\nTrees are identical (same root hash)")
         return
 
-    store = db_old.get_store()
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
 
     # Create Differ instance to track statistics
     differ = Differ(store)
@@ -397,7 +352,7 @@ def diff_databases(old_db_path: str, new_db_path: str,
     deleted_count = 0
     modified_count = 0
 
-    for event in differ.diff(old_root_hash, new_root_hash):
+    for event in differ.diff(old_hash, new_hash):
         event_count += 1
 
         if limit is None or event_count <= limit:
@@ -513,39 +468,26 @@ Examples:
                         help='Maximum rows to display (default: 100)')
 
     # Diff subcommand
-    diff_parser = subparsers.add_parser('diff', help='Diff two SQLite databases',
+    diff_parser = subparsers.add_parser('diff', help='Diff two trees by root hash',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Diff two databases
-  python cli.py diff old.sqlite new.sqlite
+  # Diff two trees
+  python cli.py diff a16b213fc2e7d598 8b2d2b8e2c75c085
 
   # Diff with custom store
-  python cli.py diff old.sqlite new.sqlite --store cached-file:///tmp/diff
-
-  # Diff specific tables only
-  python cli.py diff old.sqlite new.sqlite --tables users products
+  python cli.py diff old_hash new_hash --store cached-file:///tmp/data
 
   # Limit output
-  python cli.py diff old.sqlite new.sqlite --limit 100
+  python cli.py diff old_hash new_hash --limit 100
         ''')
 
-    diff_parser.add_argument('old_database', help='Path to old SQLite database')
-    diff_parser.add_argument('new_database', help='Path to new SQLite database')
+    diff_parser.add_argument('old_hash', help='Root hash of old tree')
+    diff_parser.add_argument('new_hash', help='Root hash of new tree')
     diff_parser.add_argument('--store', default='cached-file://.prolly',
                         help='Store spec (default: cached-file://.prolly)')
-    diff_parser.add_argument('--pattern', type=float, default=0.0001,
-                        help='Split pattern (default: 0.0001)')
-    diff_parser.add_argument('--seed', type=int, default=42,
-                        help='Random seed (default: 42)')
     diff_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
-    diff_parser.add_argument('--batch-size', type=int, default=1000,
-                        help='Batch size for inserts (default: 1000)')
-    diff_parser.add_argument('--tables', nargs='+', default=None,
-                        help='Specific table names to diff')
-    diff_parser.add_argument('--verbose-batches', action='store_true',
-                        help='Show detailed batch statistics')
     diff_parser.add_argument('--limit', type=int, default=None,
                         help='Maximum diff events to display (default: all)')
 
@@ -572,16 +514,11 @@ Examples:
             limit=args.limit
         )
     elif args.command == 'diff':
-        diff_databases(
-            old_db_path=args.old_database,
-            new_db_path=args.new_database,
+        diff_trees(
+            old_hash=args.old_hash,
+            new_hash=args.new_hash,
             store_spec=args.store,
-            pattern=args.pattern,
-            seed=args.seed,
             cache_size=args.cache_size,
-            batch_size=args.batch_size,
-            tables_filter=args.tables,
-            verbose_batches=args.verbose_batches,
             limit=args.limit
         )
     else:

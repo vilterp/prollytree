@@ -42,13 +42,19 @@ class ProllyTree:
 
         self.root = Node(is_leaf=True)
 
-        # Operation tracking
-        self.ops = []
-        self.reset_ops()
+        # Operation statistics
+        self.reset_stats()
 
-    def reset_ops(self):
-        """Reset operation tracking for a new batch"""
-        self.ops = []
+    def reset_stats(self):
+        """Reset operation statistics for a new batch"""
+        self.stats = {
+            'nodes_created': 0,
+            'leaves_created': 0,
+            'internals_created': 0,
+            'nodes_reused': 0,
+            'subtrees_reused': 0,
+            'nodes_read': 0,
+        }
 
     def _rolling_hash(self, current_hash, data):
         """
