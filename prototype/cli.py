@@ -26,6 +26,7 @@ from db import DB
 from store import CachedFSStore, create_store_from_spec
 from diff import Differ, Added, Deleted, Modified
 from sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
+from commonality import compute_commonality, print_commonality_report
 
 def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
                   cache_size: Optional[int] = None, reconstruct: bool = True,
@@ -255,6 +256,27 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
     tree._print_tree(label=label, verbose=verbose)
 
 
+def commonality_analysis(left_hash: str, right_hash: str, store_spec: str = 'cached-file://.prolly',
+                         cache_size: Optional[int] = None):
+    """
+    Compute commonality between two tree roots.
+
+    Args:
+        left_hash: Root hash of left tree
+        right_hash: Root hash of right tree
+        store_spec: Store specification
+        cache_size: Cache size for cached stores
+    """
+    print(f"Opening store: {store_spec}")
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    # Compute commonality
+    stats = compute_commonality(store, left_hash, right_hash)
+
+    # Print report
+    print_commonality_report(left_hash, right_hash, stats)
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -387,6 +409,21 @@ Examples:
     print_tree_parser.add_argument('--verbose', action='store_true',
                         help='Show all leaf node values (default: only show first/last keys and count)')
 
+    # Commonality subcommand
+    commonality_parser = subparsers.add_parser('commonality', help='Compare two tree roots (Venn diagram)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Compare two trees
+  python cli.py commonality 1395402e5fd71b2d 3005a56aaed3813a --store cached-file://.prolly
+        ''')
+    commonality_parser.add_argument('left_hash', help='Root hash of left tree')
+    commonality_parser.add_argument('right_hash', help='Root hash of right tree')
+    commonality_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
+    commonality_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+
     args = parser.parse_args()
 
     if args.command == 'import-sqlite':
@@ -427,6 +464,13 @@ Examples:
             cache_size=args.cache_size,
             prefix=args.prefix,
             verbose=args.verbose
+        )
+    elif args.command == 'commonality':
+        commonality_analysis(
+            left_hash=args.left_hash,
+            right_hash=args.right_hash,
+            store_spec=args.store,
+            cache_size=args.cache_size
         )
     else:
         parser.print_help()
