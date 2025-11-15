@@ -26,6 +26,7 @@ from store import create_store_from_spec, CachedFSStore
 from diff import Differ, Added, Deleted, Modified
 from sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
 from commonality import compute_commonality, print_commonality_report
+from gc import garbage_collect, find_garbage_nodes, GCStats
 
 def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
                   cache_size: Optional[int] = None,
@@ -306,6 +307,63 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
     print(f"{'='*80}")
 
 
+def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly',
+               cache_size: Optional[int] = None, dry_run: bool = True):
+    """
+    Run garbage collection on the store.
+
+    Args:
+        root_hashes: List of root hashes to keep (everything else is garbage)
+        store_spec: Store specification string
+        cache_size: Optional cache size for cached stores
+        dry_run: If True, only show what would be removed without actually removing
+    """
+    print(f"{'='*80}")
+    print(f"GARBAGE COLLECTION")
+    print(f"{'='*80}")
+    print(f"Store: {store_spec}")
+    print(f"Root hashes to keep: {len(root_hashes)}")
+    for i, root_hash in enumerate(root_hashes, 1):
+        print(f"  {i}. {root_hash}")
+    print(f"Mode: {'DRY RUN (no changes)' if dry_run else 'LIVE (will remove garbage)'}")
+    print()
+
+    # Create store
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    # Run garbage collection
+    print("Analyzing store...")
+    root_set = set(root_hashes)
+    stats = garbage_collect(store, root_set, dry_run=dry_run)
+
+    print()
+    print(f"{'='*80}")
+    print(f"GARBAGE COLLECTION RESULTS")
+    print(f"{'='*80}")
+    print(f"Total nodes in store:     {stats.total_nodes:>10,}")
+    print(f"Reachable nodes:          {stats.reachable_nodes:>10,}  ({stats.reachable_percent:>5.1f}%)")
+    print(f"Garbage nodes:            {stats.garbage_nodes:>10,}  ({stats.garbage_percent:>5.1f}%)")
+    print(f"{'='*80}")
+
+    if dry_run:
+        print()
+        print("DRY RUN: No nodes were removed.")
+        print("To actually remove garbage, run with --no-dry-run")
+    else:
+        print()
+        print(f"SUCCESS: Removed {stats.garbage_nodes:,} garbage nodes from store.")
+
+    # Show cache statistics if available
+    if isinstance(store, CachedFSStore):
+        print()
+        print(f"{'='*80}")
+        print(f"CACHE STATISTICS")
+        print(f"{'='*80}")
+        cache_stats = store.get_cache_stats()
+        for key, value in cache_stats.items():
+            print(f"  {key}: {value}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -486,6 +544,32 @@ Examples:
     set_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
 
+    # GC subcommand
+    gc_parser = subparsers.add_parser('gc', help='Garbage collect unreachable nodes',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Dry run - show what would be removed
+  python cli.py gc 65161256c9d66c53 ce615a7ec196650a --store cached-file://.prolly
+
+  # Actually remove garbage nodes
+  python cli.py gc 65161256c9d66c53 --no-dry-run
+
+  # Keep multiple roots
+  python cli.py gc root1 root2 root3 --store cached-file://.prolly
+
+Note: Garbage collection removes all nodes not reachable from the specified
+root hashes. This is useful for cleaning up old tree versions. Always run
+with --dry-run first to verify what will be removed.
+        ''')
+    gc_parser.add_argument('roots', nargs='+', help='Root hashes to keep (everything else is garbage)')
+    gc_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
+    gc_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+    gc_parser.add_argument('--no-dry-run', action='store_true',
+                        help='Actually remove garbage (default is dry run)')
+
     args = parser.parse_args()
 
     if args.command == 'import-sqlite':
@@ -546,6 +630,13 @@ Examples:
             value=args.value,
             store_spec=args.store,
             cache_size=args.cache_size
+        )
+    elif args.command == 'gc':
+        gc_command(
+            root_hashes=args.roots,
+            store_spec=args.store,
+            cache_size=args.cache_size,
+            dry_run=not args.no_dry_run
         )
     else:
         parser.print_help()
