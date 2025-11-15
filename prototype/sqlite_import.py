@@ -205,6 +205,10 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store=None,
         print(f"\nCompleted {table_name}: {rows_processed:,} rows in {table_time:.2f}s "
               f"({table_rate:,.0f} rows/sec)")
 
+        # Print root hash for this table
+        root_hash = tree._hash_node(tree.root)
+        print(f"  Root hash: {root_hash}")
+
         # Show cumulative node creation stats and size distributions
         if isinstance(tree.store, CachedFSStore):
             creation_stats = tree.store.get_creation_stats()
