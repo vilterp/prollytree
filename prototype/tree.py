@@ -588,7 +588,7 @@ class ProllyTree:
         """
         Generator that yields (key, value) pairs with keys matching the given prefix.
 
-        Navigates to the prefix and yields items until the cursor exceeds the prefix.
+        Uses TreeCursor to iterate through all items and filters by prefix.
 
         Args:
             prefix: Key prefix to filter (default: "" returns all items)
@@ -596,7 +596,33 @@ class ProllyTree:
         Yields:
             Tuples of (key, value) for keys matching the prefix
         """
-        yield from self._items_from_node(self.root, prefix)
+        from cursor import TreeCursor
+
+        # Get root hash
+        root_hash = self._hash_node(self.root)
+
+        # Create cursor and iterate
+        cursor = TreeCursor(self.store, root_hash)
+        entry = cursor.next()
+        found_any = False
+
+        while entry:
+            key, value = entry
+            # Check if key matches prefix
+            if isinstance(key, str):
+                if key.startswith(prefix):
+                    yield (key, value)
+                    found_any = True
+                elif found_any and prefix and key > prefix:
+                    # We've already found matches and now we're past the prefix
+                    # (any key > prefix cannot start with prefix since keys are sorted)
+                    break
+            else:
+                # Non-string keys - only yield if no prefix
+                if not prefix:
+                    yield (key, value)
+
+            entry = cursor.next()
 
     def _items_from_node(self, node, prefix):
         """Recursively yield items from node and its children that match prefix"""
@@ -622,13 +648,19 @@ class ProllyTree:
                 lower_bound = node.keys[i-1] if i > 0 else (""  if isinstance(prefix, str) else None)
                 upper_bound = node.keys[i] if i < len(node.keys) else None
 
-                # Skip if this child is entirely before the prefix (only for string keys)
+                # Skip if this child is entirely before the prefix
+                # Child is before if its upper bound is <= prefix
                 if prefix and isinstance(upper_bound, str) and upper_bound <= prefix:
                     continue
 
-                # Skip if this child is entirely after the prefix range (only for string keys)
-                if prefix and isinstance(lower_bound, str) and lower_bound > prefix + '\xff':
-                    break
+                # Skip if this child is entirely after any possible prefix match
+                # Child is after if its lower bound starts with something > any prefix match
+                # Use a large suffix to represent "end of prefix range"
+                if prefix and isinstance(lower_bound, str):
+                    # If lower bound doesn't start with prefix and is lexicographically after
+                    # all possible keys with this prefix, skip
+                    if not lower_bound.startswith(prefix) and lower_bound > prefix + '\xff\xff\xff\xff':
+                        break
 
                 # This child might contain matching keys
                 child = self._get_node(child_hash)

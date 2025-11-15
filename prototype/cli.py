@@ -18,19 +18,18 @@ Provides commands for importing SQLite databases and dumping data.
 
 import argparse
 import sqlite3
-import json
 import time
 from typing import Optional, List
 
 from db import DB
-from store import CachedFSStore, create_store_from_spec
+from store import create_store_from_spec
 from diff import Differ, Added, Deleted, Modified
 from sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
 from commonality import compute_commonality, print_commonality_report
 
 def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
-                  cache_size: Optional[int] = None, reconstruct: bool = True,
-                  limit: int = 100, prefix: Optional[str] = None):
+                  cache_size: Optional[int] = None,
+                  prefix: Optional[str] = None):
     """
     Dump keys from the database.
 
@@ -38,8 +37,6 @@ def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
         root_hash: Root hash to load
         store_spec: Store specification
         cache_size: Cache size for cached stores
-        reconstruct: Reconstruct row objects
-        limit: Maximum number of rows to display
         prefix: Optional key prefix to dump (default: dump all)
     """
     from tree import ProllyTree
@@ -64,59 +61,17 @@ def dump_database(root_hash: str, store_spec: str = 'cached-file://.prolly',
         print(f"Error: Root hash {root_hash} not found in store")
         return
 
-    # Create DB wrapper
-    db = DB(store=store, pattern=0.0001, seed=42)
-
     # Use prefix if provided, otherwise dump everything
     prefix = prefix or ""
 
-    # Check if this is a schema or data dump
-    if prefix.startswith('/s/'):
-        # Dumping schemas
-        print(f"\nSchemas:")
-        for key, value in tree.items(prefix):
-            print(f"{key} => {value}")
-    elif prefix.startswith('/d/'):
-        # Dumping schemas
-        print(f"\nSchemas:")
-        for key, value in tree.items(prefix):
-            print(f"{key} => {value}")
-    elif prefix.startswith('/d/'):
-        # Dumping data
-        # Extract table name
-        parts = prefix.split('/')
-        if len(parts) >= 3:
-            table_name = parts[2]
-            row_prefix = "/".join(parts[3:]) if len(parts) > 3 else ""
+    # Generic dump
+    print(f"\nKeys with prefix: '{prefix}'")
+    count = 0
+    for key, value in tree.items(prefix):
+        print(f"{key} => {value}")
+        count += 1
 
-            print(f"\nData from table: {table_name}")
-            count = 0
-            for key, row_data in db.read_rows(table_name, prefix=row_prefix,
-                                             reconstruct=reconstruct):
-                count += 1
-                if count <= limit:
-                    if reconstruct:
-                        print(f"{key} => {json.dumps(row_data, separators=(',', ':'))}")
-                    else:
-                        print(f"{key} => {row_data}")
-
-            print(f"\nTotal: {count:,} rows found")
-            if count > limit:
-                print(f"(showing first {limit}, {count - limit:,} more rows omitted)")
-        else:
-            print("Error: Invalid prefix format for data dump")
-    else:
-        # Generic dump
-        print(f"\nKeys with prefix: {prefix}")
-        count = 0
-        for key, value in tree.items(prefix):
-            count += 1
-            if count <= limit:
-                print(f"{key} => {value}")
-
-        print(f"\nTotal: {count:,} keys found")
-        if count > limit:
-            print(f"(showing first {limit}, {count - limit:,} more keys omitted)")
+    print(f"\nTotal: {count:,} keys found")
 
 
 def diff_trees(old_hash: str, new_hash: str,
@@ -423,8 +378,6 @@ Examples:
                         help='Cache size for cached stores')
     dump_parser.add_argument('--no-reconstruct', action='store_true',
                         help='Show raw arrays instead of reconstructed objects')
-    dump_parser.add_argument('--limit', type=int, default=100,
-                        help='Maximum rows to display (default: 100)')
 
     # Diff subcommand
     diff_parser = subparsers.add_parser('diff', help='Diff two trees by root hash',
@@ -553,8 +506,6 @@ Examples:
             root_hash=args.root_hash,
             store_spec=args.store,
             cache_size=args.cache_size,
-            reconstruct=not args.no_reconstruct,
-            limit=args.limit,
             prefix=args.prefix
         )
     elif args.command == 'diff':
