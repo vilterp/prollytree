@@ -22,7 +22,7 @@ from typing import Optional, List
 
 from db import DB
 from store import Store, CachedFSStore
-from diff import TreeCursor
+from cursor import TreeCursor
 
 
 def validate_tree_sorted(db: DB, table_name: str) -> bool:
@@ -133,13 +133,11 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
     print(f"Stored schema: {len(columns)} columns")
     db.create_table(table_name, columns, column_types, primary_key)
 
-    # Prepare row iterator with ORDER BY for sorted batches
+    # Prepare row iterator - no ORDER BY, we'll sort each batch in Python
     if primary_key == ["rowid"]:
-        cursor.execute(f"SELECT rowid, * FROM {table_name} ORDER BY rowid")
+        cursor.execute(f"SELECT rowid, * FROM {table_name}")
     else:
-        # Order by primary key columns
-        order_by = ", ".join(primary_key)
-        cursor.execute(f"SELECT * FROM {table_name} ORDER BY {order_by}")
+        cursor.execute(f"SELECT * FROM {table_name}")
 
     def row_generator():
         """Generator that yields rows from cursor."""
@@ -157,9 +155,18 @@ def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str
 
     # Insert rows
     table_start = time.time()
+
+    # Enable per-batch validation if requested
+    if validate:
+        db._validate_after_batch = True
+
     rows_processed = db.insert_rows(table_name, row_generator(),
                                     batch_size=batch_size,
                                     verbose=verbose_batches)
+
+    # Disable per-batch validation
+    if validate:
+        db._validate_after_batch = False
 
     table_time = time.time() - table_start
     table_rate = rows_processed / table_time if table_time > 0 else 0

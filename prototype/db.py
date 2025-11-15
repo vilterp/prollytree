@@ -163,6 +163,22 @@ class DB:
                 batch.sort(key=lambda x: x[0])
                 self.tree.insert_batch(batch, verbose=verbose)
                 total_inserted += len(batch)
+
+                # Validate tree after batch if requested
+                if hasattr(self, '_validate_after_batch') and self._validate_after_batch:
+                    from cursor import TreeCursor
+                    root_hash = self.tree._hash_node(self.tree.root)
+                    cursor = TreeCursor(self.tree.store, root_hash)
+                    prev_key = None
+                    position = 0
+                    entry = cursor.next()
+                    while entry:
+                        position += 1
+                        if prev_key is not None and entry[0] < prev_key:
+                            raise ValueError(f"Tree became unsorted after batch {total_inserted//batch_size} at position {position}: {prev_key} > {entry[0]}")
+                        prev_key = entry[0]
+                        entry = cursor.next()
+
                 batch = []
 
         # Insert remaining rows
@@ -170,6 +186,21 @@ class DB:
             batch.sort(key=lambda x: x[0])
             self.tree.insert_batch(batch, verbose=verbose)
             total_inserted += len(batch)
+
+            # Validate tree after final batch if requested
+            if hasattr(self, '_validate_after_batch') and self._validate_after_batch:
+                from cursor import TreeCursor
+                root_hash = self.tree._hash_node(self.tree.root)
+                cursor = TreeCursor(self.tree.store, root_hash)
+                prev_key = None
+                position = 0
+                entry = cursor.next()
+                while entry:
+                    position += 1
+                    if prev_key is not None and entry[0] < prev_key:
+                        raise ValueError(f"Tree became unsorted after final batch at position {position}: {prev_key} > {entry[0]}")
+                    prev_key = entry[0]
+                    entry = cursor.next()
 
         return total_inserted
 
