@@ -250,7 +250,7 @@ def import_sqlite_database(db_path: str, store: Store,
         cache_stats = store.get_cache_stats()
         print(f"  Cache size: {cache_stats['max_cache_size']}")
 
-    db = DB(store=store, pattern=pattern, seed=seed)
+    db = DB(store=store, pattern=pattern, seed=seed, validate=validate)
 
     # Import each table
     total_rows = 0

@@ -60,7 +60,7 @@ class BatchStats:
 
 
 class ProllyTree:
-    def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None):
+    def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None, validate=False):
         """
         Initialize ProllyTree with content-based splitting.
 
@@ -69,10 +69,12 @@ class ProllyTree:
                     Default 0.25 means ~4 entries per node on average.
             seed: Seed for rolling hash function for reproducibility
             store: Storage backend (defaults to MemoryStore if not provided)
+            validate: If True, validate node structure during tree building (slower)
         """
         self.pattern = int(pattern * (2**32))  # Convert to uint32 threshold
         self.seed = seed
         self.store = store if store is not None else MemoryStore()
+        self.validate = validate
 
         self.root = Node(is_leaf=True)
 
@@ -146,13 +148,17 @@ class ProllyTree:
         """Retrieve node by hash"""
         return self.store.get_node(node_hash)
 
-    def insert_batch(self, mutations, verbose=True, validate=False):
+    def insert_batch(self, mutations, verbose=True):
         """
         Incrementally insert a batch of (key, value) pairs.
         mutations: sorted list of (key, value) tuples
-        validate: if True, validate tree is sorted after insertion
         Returns: dict with operation stats
         """
+        import time
+
+        # Track timing
+        start_time = time.time()
+
         # Reset stats for this batch
         self.reset_stats()
 
@@ -174,8 +180,8 @@ class ProllyTree:
 
         self.root = new_root
 
-        # Validate if requested
-        if validate:
+        # Validate if enabled
+        if self.validate:
             is_valid, error_msg, position, prev_key, current_key = self.validate_sorted()
             if not is_valid:
                 # Print some debug info
@@ -191,10 +197,15 @@ class ProllyTree:
 
         stats = self._summarize_ops()
 
+        # Calculate timing
+        elapsed = time.time() - start_time
+        rows_per_sec = len(mutations) / elapsed if elapsed > 0 else 0
+
         # Print single-line batch summary
         if verbose:
             summary_parts = [f"Inserted {len(mutations)} rows"]
             summary_parts.append(f"{stats['nodes_created']} new nodes created")
+            summary_parts.append(f"{rows_per_sec:,.0f} rows/sec")
 
             # Add cache stats if using CachedFSStore
             if isinstance(self.store, CachedFSStore) and cache_stats_before:
@@ -281,7 +292,8 @@ class ProllyTree:
                 return new_leaves[0]
             else:
                 node = self._build_internal_from_children(new_leaves, verbose)
-                node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
+                if self.validate:
+                    node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
                 return node
 
     def _build_internal_from_children(self, children, verbose=False) -> Node | None:
@@ -343,7 +355,8 @@ class ProllyTree:
                         len(current_internal.values) >= MIN_CHILDREN and
                         children_remaining >= MIN_CHILDREN):
                         # Split point! Validate and save current internal
-                        current_internal.validate(self.store, context="_build_internal_from_children (split)")
+                        if self.validate:
+                            current_internal.validate(self.store, context="_build_internal_from_children (split)")
                         internal_nodes.append(current_internal)
                         current_internal = Node(is_leaf=False)
                         roll_hash = self.seed  # Reset hash for next node
@@ -362,11 +375,13 @@ class ProllyTree:
                 return self._get_node(child_hash)
             elif len(current_internal.values) > 1:
                 # Validate before adding
-                current_internal.validate(self.store, context="_build_internal_from_children (end)")
+                if self.validate:
+                    current_internal.validate(self.store, context="_build_internal_from_children (end)")
                 internal_nodes.append(current_internal)
             elif internal_nodes:
                 # Single child but we already have other nodes - validate and add it
-                current_internal.validate(self.store, context="_build_internal_from_children (single child)")
+                if self.validate:
+                    current_internal.validate(self.store, context="_build_internal_from_children (single child)")
                 internal_nodes.append(current_internal)
 
         # Handle edge cases
@@ -385,7 +400,8 @@ class ProllyTree:
                 raise ValueError("Internal node has no children")
             else:
                 # Validate before returning
-                node.validate(self.store, context="_build_internal_from_children (return single)")
+                if self.validate:
+                    node.validate(self.store, context="_build_internal_from_children (return single)")
                 return node
         else:
             # Multiple internal nodes - build parent recursively
@@ -452,7 +468,8 @@ class ProllyTree:
                 leaf.values = current_values
 
                 # Validate leaf before adding
-                leaf.validate(self.store, context="_build_leaves")
+                if self.validate:
+                    leaf.validate(self.store, context="_build_leaves")
 
                 leaves.append(leaf)
 

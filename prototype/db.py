@@ -59,7 +59,7 @@ class DB:
     - Table data at /d/<table_name>/<primary_key>
     """
 
-    def __init__(self, store: Store, pattern: float = 0.0001, seed: int = 42):
+    def __init__(self, store: Store, pattern: float = 0.0001, seed: int = 42, validate: bool = False):
         """
         Initialize database with a Store instance.
 
@@ -67,8 +67,9 @@ class DB:
             store: Storage backend instance
             pattern: ProllyTree split pattern
             seed: Random seed for rolling hash
+            validate: If True, validate tree structure during operations (slower)
         """
-        self.tree = ProllyTree(pattern=pattern, seed=seed, store=store)
+        self.tree = ProllyTree(pattern=pattern, seed=seed, store=store, validate=validate)
 
     def create_table(self, name: str, columns: List[str], types: List[str],
                      primary_key: List[str]) -> Table:
@@ -161,18 +162,14 @@ class DB:
             # Insert batch when full
             if len(batch) >= batch_size:
                 batch.sort(key=lambda x: x[0])
-                # Pass validate flag if _validate_after_batch is set
-                validate = hasattr(self, '_validate_after_batch') and self._validate_after_batch
-                self.tree.insert_batch(batch, verbose=verbose, validate=validate)
+                self.tree.insert_batch(batch, verbose=verbose)
                 total_inserted += len(batch)
                 batch = []
 
         # Insert remaining rows
         if batch:
             batch.sort(key=lambda x: x[0])
-            # Pass validate flag if _validate_after_batch is set
-            validate = hasattr(self, '_validate_after_batch') and self._validate_after_batch
-            self.tree.insert_batch(batch, verbose=verbose, validate=validate)
+            self.tree.insert_batch(batch, verbose=verbose)
             total_inserted += len(batch)
 
         return total_inserted
