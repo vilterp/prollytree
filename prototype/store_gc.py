@@ -75,14 +75,14 @@ def find_reachable_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
         if node_hash in reachable:
             continue
 
-        # Mark as reachable
-        reachable.add(node_hash)
-
         # Get node and traverse children
         node = store.get_node(node_hash)
         if node is None:
-            # Node not found in store - this might indicate a corrupted tree
+            # Node not found in store - skip it (don't mark as reachable)
             continue
+
+        # Mark as reachable (only if node exists)
+        reachable.add(node_hash)
 
         if not node.is_leaf:
             # Internal node - add all children to visit

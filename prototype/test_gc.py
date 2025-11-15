@@ -17,7 +17,7 @@ Tests for garbage collection.
 import pytest
 from tree import ProllyTree
 from store import MemoryStore
-from gc import (
+from store_gc import (
     find_reachable_nodes,
     find_garbage_nodes,
     collect_garbage_stats,
