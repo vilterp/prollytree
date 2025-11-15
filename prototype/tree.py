@@ -22,7 +22,8 @@ Features:
 
 import hashlib
 from typing import Optional
-from store import Node, Store, MemoryStore
+from node import Node
+from store import Store, MemoryStore
 
 
 class BatchStats:
