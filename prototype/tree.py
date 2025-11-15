@@ -87,7 +87,7 @@ class ProllyTree:
 
     def _rolling_hash(self, current_hash, data):
         """
-        Simple rolling hash (Rabin fingerprinting style).
+        Fast rolling hash using Python's builtin hash function.
         Updates the hash with new data.
 
         Args:
@@ -97,10 +97,8 @@ class ProllyTree:
         Returns:
             Updated hash value (uint32)
         """
-        h = current_hash
-        for byte in data:
-            h = ((h * 31) + byte) & 0xFFFFFFFF
-        return h
+        # Use Python's fast builtin hash combined with current state
+        return (current_hash ^ hash(data)) & 0xFFFFFFFF
 
     def _hash_node(self, node):
         """
