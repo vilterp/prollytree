@@ -386,6 +386,108 @@ def test_diff_different_trees_same_value(store):
     assert len(events) == 0, f"Expected no diff events for identical value at /s/lines, got {events}"
 
 
+def test_diff_same_key_value_different_tree_structure(store):
+    """
+    Test that identical key-value pairs show NO diff even when tree structure differs.
+
+    This is a regression test for the bug where the diff algorithm reports
+    deletions+additions for unchanged keys when trees have different structures.
+    """
+    schema_json = '{"columns":["i","j","ckt"],"types":["INTEGER","INTEGER","TEXT"],"primary_key":["i","j","ckt"]}'
+
+    # Create tree1 with lots of data to force multi-level internal nodes
+    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    entries1 = [
+        ("/s/lines", schema_json),  # The key we care about
+    ]
+    # Add lots of keys before /s/lines
+    for i in range(50):
+        entries1.append((f"/a/key{i:03d}", f"value{i}"))
+    # Add lots of keys after /s/lines
+    for i in range(50):
+        entries1.append((f"/z/key{i:03d}", f"value{i}"))
+    tree1.insert_batch(sorted(entries1), verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Create tree2 with different structure but SAME value for /s/lines
+    tree2 = ProllyTree(pattern=0.0001, seed=99, store=store)  # Different seed = different structure
+    entries2 = [
+        ("/s/lines", schema_json),  # Same value!
+    ]
+    # Add different set of keys before /s/lines
+    for i in range(30):
+        entries2.append((f"/a/key{i:03d}", f"modified_{i}"))  # Different values
+    # Add some new keys
+    for i in range(20):
+        entries2.append((f"/m/key{i:03d}", f"new_{i}"))
+    # Keep some z keys the same
+    for i in range(50):
+        entries2.append((f"/z/key{i:03d}", f"value{i}"))
+    tree2.insert_batch(sorted(entries2), verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Trees should have different hashes (different structure and data)
+    assert hash1 != hash2
+
+    # Get all diff events
+    events = list(diff(store, hash1, hash2))
+
+    # Check that /s/lines is NOT in any events (since its value is identical)
+    events_for_lines = [e for e in events if (
+        (isinstance(e, (Added, Deleted)) and e.key == "/s/lines") or
+        (isinstance(e, Modified) and e.key == "/s/lines")
+    )]
+
+    assert len(events_for_lines) == 0, \
+        f"Expected NO diff events for /s/lines (value is identical), but got: {events_for_lines}"
+
+    # Verify other expected changes are present (just a sanity check)
+    assert len(events) > 0, "Expected some diff events for other keys"
+
+
+def test_diff_reports_identical_value_as_deleted_added_bug(store):
+    """
+    FAILING TEST: Bug where identical key-value pairs are reported as Deleted+Added.
+
+    The root cause: When diff traverses trees with different structures and encounters
+    non-overlapping child ranges, it yields ALL entries from one child as deletions
+    and ALL from the other as additions, WITHOUT checking if they're actually the same.
+
+    This test uses the real-world hashes that exhibit the bug.
+    """
+    # Use the actual stored trees that exhibit the bug
+    from store import create_store_from_spec
+    real_store = create_store_from_spec('cached-file://.prolly')
+
+    # These are real commit hashes that have the bug
+    hash1 = 'a16b213fc2e7d598'
+    hash2 = '8b2d2b8e2c75c085'
+
+    # Verify the trees exist
+    if real_store.get_node(hash1) is None or real_store.get_node(hash2) is None:
+        # Trees don't exist in this environment, skip test
+        import pytest
+        pytest.skip("Real trees not available in test environment")
+
+    # Get all diff events for /s/lines
+    events = list(diff(real_store, hash1, hash2, prefix="/s/lines"))
+
+    # Check if we got Deleted + Added for the same key
+    deleted_keys = {e.key: e.old_value for e in events if isinstance(e, Deleted)}
+    added_keys = {e.key: e.value for e in events if isinstance(e, Added)}
+
+    # BUG: If a key appears in both deleted and added with same value, that's the bug
+    for key in deleted_keys:
+        if key in added_keys:
+            if deleted_keys[key] == added_keys[key]:
+                assert False, \
+                    f"BUG: Key {key} reported as both Deleted and Added with identical value! " \
+                    f"Value: {deleted_keys[key][:100]}..."
+
+    # If we only got deletions OR additions (not both), the values must be different
+    # which would be fine.  But if we got both with same values, that's the bug.
+
+
 def test_differ_statistics_with_changes(store):
     """Test that Differ tracks statistics correctly with changes."""
     # Create tree1 with 100 entries
