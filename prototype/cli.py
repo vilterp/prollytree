@@ -484,6 +484,9 @@ Examples:
 
   # Limit output
   python cli.py diff old_hash new_hash --limit 100
+
+  # Filter by key prefix
+  python cli.py diff old_hash new_hash --prefix /d/table_name
         ''')
 
     diff_parser.add_argument('old_hash', help='Root hash of old tree')
@@ -494,6 +497,8 @@ Examples:
                         help='Cache size for cached stores')
     diff_parser.add_argument('--limit', type=int, default=None,
                         help='Maximum diff events to display (default: all)')
+    diff_parser.add_argument('--prefix', type=str, default=None,
+                        help='Key prefix to filter diff results')
 
     args = parser.parse_args()
 
@@ -523,7 +528,8 @@ Examples:
             new_hash=args.new_hash,
             store_spec=args.store,
             cache_size=args.cache_size,
-            limit=args.limit
+            limit=args.limit,
+            prefix=args.prefix
         )
     else:
         parser.print_help()
