@@ -78,12 +78,12 @@ def _do_insert(old_tree, mutations, expected_contents, verbose=False):
 
 def test_insert_into_empty_tree(empty_tree):
     """Test inserting batch into empty tree."""
-    tree1, stats1 = _do_insert(
+    _, stats = _do_insert(
         empty_tree,
         mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
         expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
     )
-    assert stats1['nodes_created'] > 0
+    assert stats['nodes_created'] > 0
 
 
 def test_insert_interleaved_keys(empty_tree):
@@ -94,12 +94,12 @@ def test_insert_interleaved_keys(empty_tree):
         expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
     )
 
-    tree2, stats2 = _do_insert(
+    _, stats = _do_insert(
         tree1,
         mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
         expected_contents=[(i, f"v{i}") for i in range(1, 13)],
     )
-    assert stats2['nodes_created'] > 0
+    assert stats['nodes_created'] > 0
 
 
 def test_insert_unaffected_range(empty_tree):
@@ -117,13 +117,13 @@ def test_insert_unaffected_range(empty_tree):
     )
 
     # Insert keys > 12, which should only affect the right subtree
-    tree3, stats3 = _do_insert(
+    _, stats = _do_insert(
         tree2,
         mutations=[(i, f"v{i}") for i in [13, 14, 15, 16]],
         expected_contents=[(i, f"v{i}") for i in range(1, 17)],
     )
     # Note: subtree reuse depends on how splits occur with the rolling hash
-    assert stats3['nodes_created'] > 0
+    assert stats['nodes_created'] > 0
 
 
 def test_large_insert_multiple_splits(empty_tree):
@@ -147,9 +147,9 @@ def test_large_insert_multiple_splits(empty_tree):
     )
 
     # Insert many more keys to cause internal nodes to split
-    tree4, stats4 = _do_insert(
+    _, stats = _do_insert(
         tree3,
         mutations=[(i, f"v{i}") for i in range(17, 41)],  # Add 24 more keys (17-40)
         expected_contents=[(i, f"v{i}") for i in range(1, 41)],
     )
-    assert stats4['nodes_created'] > 0
+    assert stats['nodes_created'] > 0
