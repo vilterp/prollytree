@@ -24,7 +24,7 @@ from typing import Optional, List
 
 from db import DB
 from store import CachedFSStore, create_store_from_spec
-from diff import diff, Added, Deleted, Modified
+from diff import Differ, Added, Deleted, Modified
 
 
 def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str,
@@ -386,6 +386,9 @@ def diff_databases(old_db_path: str, new_db_path: str,
 
     store = db_old.get_store()
 
+    # Create Differ instance to track statistics
+    differ = Differ(store)
+
     print(f"\nDiff events (old -> new):")
     print("-"*80)
 
@@ -394,7 +397,7 @@ def diff_databases(old_db_path: str, new_db_path: str,
     deleted_count = 0
     modified_count = 0
 
-    for event in diff(store, old_root_hash, new_root_hash):
+    for event in differ.diff(old_root_hash, new_root_hash):
         event_count += 1
 
         if limit is None or event_count <= limit:
@@ -425,6 +428,12 @@ def diff_databases(old_db_path: str, new_db_path: str,
 
     if limit is not None and event_count > limit:
         print(f"\n(showing first {limit}, {event_count - limit:,} more events omitted)")
+
+    # Print diff statistics
+    diff_stats = differ.get_stats()
+    print(f"\nDiff Algorithm Statistics:")
+    print(f"  Subtrees skipped (identical hashes): {diff_stats.subtrees_skipped:,}")
+    print(f"  Nodes compared:                      {diff_stats.nodes_compared:,}")
 
     # Show cache stats if using cached store
     if isinstance(store, CachedFSStore):

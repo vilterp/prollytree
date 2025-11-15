@@ -23,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from tree import ProllyTree
 from store import MemoryStore
-from diff import diff, Added, Deleted, Modified
+from diff import diff, Differ, Added, Deleted, Modified
 
 
 @pytest.fixture
@@ -303,3 +303,63 @@ def test_diff_event_repr():
     assert repr(added) == "Added(1, 'a')"
     assert repr(deleted) == "Deleted(2)"
     assert repr(modified) == "Modified(3, 'old' -> 'new')"
+
+
+def test_differ_statistics(store):
+    """Test that Differ tracks subtree skip statistics."""
+    # Create tree1 with 100 entries
+    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    entries1 = [(i, f"v{i}") for i in range(1, 101)]
+    tree1.insert_batch(entries1, verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Create tree2 - identical to tree1
+    tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    entries2 = [(i, f"v{i}") for i in range(1, 101)]
+    tree2.insert_batch(entries2, verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Use Differ to track stats
+    differ = Differ(store)
+    events = list(differ.diff(hash1, hash2))
+
+    # Identical trees should have no events
+    assert len(events) == 0
+
+    # Should have skipped the root (since hashes are identical)
+    stats = differ.get_stats()
+    assert stats.subtrees_skipped == 1
+    assert stats.nodes_compared == 0
+
+
+def test_differ_statistics_with_changes(store):
+    """Test that Differ tracks statistics correctly with changes."""
+    # Create tree1 with 100 entries
+    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    entries1 = [(i, f"v{i}") for i in range(1, 101)]
+    tree1.insert_batch(entries1, verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Create tree2 with modification in middle
+    tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    entries2 = [(i, f"v{i}") for i in range(1, 101)]
+    # Modify one entry
+    entries2[49] = (50, "MODIFIED")
+    tree2.insert_batch(entries2, verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Use Differ to track stats
+    differ = Differ(store)
+    events = list(differ.diff(hash1, hash2))
+
+    # Should have one modification
+    assert len(events) == 1
+    assert isinstance(events[0], Modified)
+    assert events[0].key == 50
+
+    # Check statistics
+    stats = differ.get_stats()
+    # Should have compared at least the root node
+    assert stats.nodes_compared >= 1
+    # subtrees_skipped can be 0 or more depending on tree structure
+    assert stats.subtrees_skipped >= 0
