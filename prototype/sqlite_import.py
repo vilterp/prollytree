@@ -270,12 +270,18 @@ def import_sqlite_database(db_path: str, store: Store,
     total_time = time.time() - total_start
     total_rate = total_rows / total_time if total_time > 0 else 0
 
+    # Get final root hash
+    final_root_hash = db.get_root_hash()
+
     print(f"\n{'='*80}")
     print(f"IMPORT COMPLETE")
     print(f"{'='*80}")
     print(f"Total rows imported: {total_rows:,}")
     print(f"Total time: {total_time:.2f}s")
     print(f"Overall rate: {total_rate:,.0f} rows/sec")
+    print(f"\n{'='*80}")
+    print(f"FINAL ROOT HASH: {final_root_hash}")
+    print(f"{'='*80}")
 
     # Print final stats
     print(f"\nTree statistics:")
