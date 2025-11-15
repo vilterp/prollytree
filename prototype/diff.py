@@ -168,9 +168,7 @@ class TreeCursor:
             # This means we need to descend to next child
             if idx < len(node.values):
                 child_hash = node.values[idx]
-                # Advance the index for this internal node
-                self.stack[-1] = (node, idx + 1)
-                # Descend into this child
+                # Descend into this child (don't increment idx yet)
                 self._descend_to_first(child_hash)
                 return self.next()
             else:
@@ -184,11 +182,12 @@ class TreeCursor:
             node, idx = self.stack[-1]
 
             if not node.is_leaf:
-                # Internal node: try next child
-                if idx < len(node.values):
-                    child_hash = node.values[idx]
-                    # Increment index for next time
-                    self.stack[-1] = (node, idx + 1)
+                # Internal node: we just finished child at idx, try next child at idx+1
+                next_idx = idx + 1
+                if next_idx < len(node.values):
+                    child_hash = node.values[next_idx]
+                    # Update index to next_idx
+                    self.stack[-1] = (node, next_idx)
                     # Descend into child
                     self._descend_to_first(child_hash)
                     return
