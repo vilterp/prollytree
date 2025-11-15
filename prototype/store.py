@@ -18,7 +18,7 @@ Provides a Store protocol and multiple implementations:
 - FileSystemStore: Persistent storage using the filesystem
 """
 
-from typing import Protocol, Optional
+from typing import Protocol, Optional, Iterator
 import json
 import os
 from collections import OrderedDict
@@ -39,6 +39,10 @@ class Store(Protocol):
 
     def delete_node(self, node_hash: str) -> bool:
         """Delete a node by its hash. Returns True if deleted, False if not found."""
+        ...
+
+    def list_nodes(self) -> Iterator[str]:
+        """Iterate over all node hashes in the store."""
         ...
 
     def count_nodes(self) -> int:
@@ -66,6 +70,10 @@ class MemoryStore:
             del self.nodes[node_hash]
             return True
         return False
+
+    def list_nodes(self) -> Iterator[str]:
+        """Iterate over all node hashes in memory."""
+        yield from self.nodes.keys()
 
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
@@ -143,6 +151,16 @@ class FileSystemStore:
             return True
         return False
 
+    def list_nodes(self) -> Iterator[str]:
+        """Iterate over all node hashes in filesystem."""
+        for subdir in os.listdir(self.base_path):
+            subdir_path = os.path.join(self.base_path, subdir)
+            if os.path.isdir(subdir_path):
+                for filename in os.listdir(subdir_path):
+                    file_path = os.path.join(subdir_path, filename)
+                    if os.path.isfile(file_path):
+                        yield filename
+
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
         count = 0
@@ -217,6 +235,10 @@ class CachedFSStore:
 
         # Remove from filesystem
         return self.fs_store.delete_node(node_hash)
+
+    def list_nodes(self) -> Iterator[str]:
+        """Iterate over all node hashes in filesystem."""
+        yield from self.fs_store.list_nodes()
 
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""

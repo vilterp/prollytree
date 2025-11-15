@@ -103,28 +103,7 @@ def iter_all_nodes(store: Store) -> Iterator[str]:
     Yields:
         Node hashes present in the store
     """
-    # This is store-specific - different stores may have different ways
-    # to enumerate all nodes. For now, we'll use a common interface.
-
-    # Try to use store's internal nodes dict if available (MemoryStore)
-    if hasattr(store, 'nodes'):
-        yield from store.nodes.keys()
-    # Try FileSystemStore approach - walk directory
-    elif hasattr(store, 'base_path'):
-        import os
-        base_path = store.base_path
-        for subdir in os.listdir(base_path):
-            subdir_path = os.path.join(base_path, subdir)
-            if os.path.isdir(subdir_path):
-                for filename in os.listdir(subdir_path):
-                    file_path = os.path.join(subdir_path, filename)
-                    if os.path.isfile(file_path):
-                        yield filename
-    # Try CachedFSStore - use underlying fs_store
-    elif hasattr(store, 'fs_store'):
-        yield from iter_all_nodes(store.fs_store)
-    else:
-        raise NotImplementedError(f"Cannot enumerate nodes for store type {type(store).__name__}")
+    yield from store.list_nodes()
 
 
 def find_garbage_nodes(store: Store, root_hashes: Set[str]) -> Set[str]:
