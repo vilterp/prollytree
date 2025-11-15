@@ -2212,4 +2212,127 @@ mod tests {
             assert_eq!(value, b"dest_value".to_vec());
         }
     }
+
+    #[test]
+    fn test_incremental_batch_insert() {
+        let storage = InMemoryNodeStorage::<32>::default();
+        let mut tree = ProllyTree::new(storage, TreeConfig::default());
+
+        // First batch: insert initial data (tree is empty, uses fast path)
+        let keys1 = vec![
+            b"key1".to_vec(),
+            b"key3".to_vec(),
+            b"key5".to_vec(),
+            b"key7".to_vec(),
+        ];
+        let values1 = vec![
+            b"value1".to_vec(),
+            b"value3".to_vec(),
+            b"value5".to_vec(),
+            b"value7".to_vec(),
+        ];
+        tree.insert_batch(&keys1, &values1);
+
+        // Verify first batch
+        assert_eq!(tree.size(), 4);
+        assert!(tree.find(b"key1").is_some());
+        assert!(tree.find(b"key3").is_some());
+        assert!(tree.find(b"key5").is_some());
+        assert!(tree.find(b"key7").is_some());
+
+        // Second batch: insert into non-empty tree (uses incremental path)
+        // This includes new keys, updates, and gaps
+        let keys2 = vec![
+            b"key0".to_vec(), // new key before all existing
+            b"key2".to_vec(), // new key in gap
+            b"key3".to_vec(), // update existing
+            b"key4".to_vec(), // new key in gap
+            b"key6".to_vec(), // new key in gap
+            b"key8".to_vec(), // new key after all existing
+        ];
+        let values2 = vec![
+            b"value0".to_vec(),
+            b"value2".to_vec(),
+            b"updated3".to_vec(), // updated value
+            b"value4".to_vec(),
+            b"value6".to_vec(),
+            b"value8".to_vec(),
+        ];
+        tree.insert_batch(&keys2, &values2);
+
+        // Verify merged state
+        assert_eq!(tree.size(), 9); // 4 original + 5 new (1 was update)
+
+        // Check all keys exist
+        assert!(tree.find(b"key0").is_some());
+        assert!(tree.find(b"key1").is_some());
+        assert!(tree.find(b"key2").is_some());
+        assert!(tree.find(b"key3").is_some());
+        assert!(tree.find(b"key4").is_some());
+        assert!(tree.find(b"key5").is_some());
+        assert!(tree.find(b"key6").is_some());
+        assert!(tree.find(b"key7").is_some());
+        assert!(tree.find(b"key8").is_some());
+
+        // Verify key3 was updated
+        if let Some(node) = tree.find(b"key3") {
+            let key_idx = node.keys.iter().position(|k| k == b"key3").unwrap();
+            let value = node.values[key_idx].clone();
+            assert_eq!(value, b"updated3".to_vec());
+        } else {
+            panic!("key3 should exist");
+        }
+
+        // Third batch: large batch insert to stress test
+        let mut keys3 = Vec::new();
+        let mut values3 = Vec::new();
+        for i in 10..100 {
+            keys3.push(format!("key{}", i).into_bytes());
+            values3.push(format!("value{}", i).into_bytes());
+        }
+        tree.insert_batch(&keys3, &values3);
+
+        // Verify final size
+        assert_eq!(tree.size(), 99); // 9 + 90 new keys
+
+        // Verify some of the new keys
+        assert!(tree.find(b"key10").is_some());
+        assert!(tree.find(b"key50").is_some());
+        assert!(tree.find(b"key99").is_some());
+    }
+
+    #[test]
+    fn test_incremental_batch_insert_performance() {
+        let storage = InMemoryNodeStorage::<32>::default();
+        let mut tree = ProllyTree::new(storage, TreeConfig::default());
+
+        // Insert initial batch of 1000 items
+        let mut keys1 = Vec::new();
+        let mut values1 = Vec::new();
+        for i in (0u32..1000).step_by(2) {
+            // Even numbers only
+            keys1.push(i.to_be_bytes().to_vec());
+            values1.push(format!("value{}", i).into_bytes());
+        }
+        tree.insert_batch(&keys1, &values1);
+        assert_eq!(tree.size(), 500);
+
+        // Insert second batch of 1000 items (odd numbers)
+        // This tests the incremental merge path
+        let mut keys2 = Vec::new();
+        let mut values2 = Vec::new();
+        for i in (1u32..1000).step_by(2) {
+            // Odd numbers only
+            keys2.push(i.to_be_bytes().to_vec());
+            values2.push(format!("value{}", i).into_bytes());
+        }
+        tree.insert_batch(&keys2, &values2);
+        assert_eq!(tree.size(), 1000);
+
+        // Verify all keys are present
+        for i in 0u32..1000 {
+            let key = i.to_be_bytes().to_vec();
+            assert!(tree.find(&key).is_some(), "Key {} should be present", i);
+        }
+    }
 }

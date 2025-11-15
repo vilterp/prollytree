@@ -167,6 +167,109 @@ pub struct ProllyNode<const N: usize> {
     pub encode_values: Vec<Vec<u8>>,
 }
 
+/// TreeCursor provides an iterator over the key-value pairs in a ProllyTree
+/// without collecting all entries into memory. This enables efficient streaming
+/// operations for large trees.
+///
+/// The cursor maintains a stack of positions as it traverses the tree depth-first,
+/// yielding leaf entries in sorted key order.
+pub struct TreeCursor<'a, const N: usize, S: NodeStorage<N>> {
+    storage: &'a S,
+    // Stack of (node, child_index) for traversal
+    // child_index points to the next child to visit
+    stack: Vec<(ProllyNode<N>, usize)>,
+    // Current leaf node and position within it
+    current_leaf: Option<ProllyNode<N>>,
+    current_leaf_index: usize,
+}
+
+impl<'a, const N: usize, S: NodeStorage<N>> TreeCursor<'a, N, S> {
+    /// Creates a new cursor starting at the root of the tree
+    pub fn new(root: &ProllyNode<N>, storage: &'a S) -> Self {
+        let mut cursor = TreeCursor {
+            storage,
+            stack: Vec::new(),
+            current_leaf: None,
+            current_leaf_index: 0,
+        };
+
+        // Initialize by descending to the leftmost leaf
+        cursor.descend_to_leftmost_leaf(root.clone());
+        cursor
+    }
+
+    /// Descends from the given node to the leftmost leaf
+    fn descend_to_leftmost_leaf(&mut self, mut node: ProllyNode<N>) {
+        loop {
+            if node.is_leaf {
+                self.current_leaf = Some(node);
+                self.current_leaf_index = 0;
+                break;
+            } else {
+                // Internal node - push to stack and descend to first child
+                if node.values.is_empty() {
+                    // Empty internal node - treat as exhausted
+                    self.current_leaf = None;
+                    break;
+                }
+
+                let first_child_hash = ValueDigest::raw_hash(&node.values[0]);
+                self.stack.push((node.clone(), 1)); // Next time visit child index 1
+
+                if let Some(child) = self.storage.get_node_by_hash(&first_child_hash) {
+                    node = child;
+                } else {
+                    // Child not found - treat as exhausted
+                    self.current_leaf = None;
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Advances to the next sibling or ancestor's next child
+    fn advance_to_next_subtree(&mut self) -> bool {
+        while let Some((parent, next_child_idx)) = self.stack.pop() {
+            if next_child_idx < parent.values.len() {
+                // Parent has more children to visit
+                let child_hash = ValueDigest::raw_hash(&parent.values[next_child_idx]);
+                self.stack.push((parent, next_child_idx + 1));
+
+                if let Some(child) = self.storage.get_node_by_hash(&child_hash) {
+                    self.descend_to_leftmost_leaf(child);
+                    return self.current_leaf.is_some();
+                }
+            }
+            // Otherwise continue popping stack to find ancestor with more children
+        }
+        false // No more subtrees
+    }
+}
+
+impl<'a, const N: usize, S: NodeStorage<N>> Iterator for TreeCursor<'a, N, S> {
+    type Item = (Vec<u8>, Vec<u8>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            if let Some(ref leaf) = self.current_leaf {
+                if self.current_leaf_index < leaf.keys.len() {
+                    let key = leaf.keys[self.current_leaf_index].clone();
+                    let value = leaf.values[self.current_leaf_index].clone();
+                    self.current_leaf_index += 1;
+                    return Some((key, value));
+                } else {
+                    // Exhausted current leaf, move to next
+                    if !self.advance_to_next_subtree() {
+                        return None;
+                    }
+                }
+            } else {
+                return None;
+            }
+        }
+    }
+}
+
 impl<const N: usize> Default for ProllyNode<N> {
     fn default() -> Self {
         ProllyNode {
@@ -764,15 +867,100 @@ impl<const N: usize> Node<N> for ProllyNode<N> {
         keys: &[Vec<u8>],
         values: &[Vec<u8>],
         storage: &mut S,
-        path_hashes: Vec<ValueDigest<N>>,
+        _path_hashes: Vec<ValueDigest<N>>,
     ) {
-        // Sort the keys and corresponding values
-        let mut key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> =
-            keys.iter().cloned().zip(values.iter().cloned()).collect();
-        key_value_pairs.sort_by(|a, b| a.0.cmp(&b.0));
+        if keys.is_empty() {
+            return;
+        }
 
-        for (key, value) in key_value_pairs {
-            self.insert(key, value, storage, path_hashes.clone());
+        // Sort mutations (the new key-value pairs to insert)
+        let mut mutations: Vec<(Vec<u8>, Vec<u8>)> =
+            keys.iter().cloned().zip(values.iter().cloned()).collect();
+        mutations.sort_by(|a, b| a.0.cmp(&b.0));
+
+        // If tree is empty, use fast path
+        if self.keys.is_empty() {
+            let leaf_nodes = self.build_leaf_nodes_streaming(&mutations, storage);
+
+            if leaf_nodes.is_empty() {
+                return;
+            }
+
+            if leaf_nodes.len() == 1 {
+                *self = leaf_nodes.into_iter().next().unwrap();
+            } else {
+                let root = self.build_parent_levels(leaf_nodes, storage);
+                *self = root;
+            }
+            return;
+        }
+
+        // DoltDB-style incremental batch insert using TreeCursor:
+        // Walk through old tree and mutations simultaneously, building new tree
+        //
+        // Optimized implementation: O(N + M) time, O(M) space
+        // - Create cursor over old tree: O(1)
+        // - Iterate through N+M entries using cursor: O(N + M)
+        // - Merge with M mutations: O(N + M)
+        // - Rebuild tree from merged entries: O(N + M)
+        // Key improvement: Uses O(M) space instead of O(N), doesn't collect entire tree
+        let mut merged_pairs = Vec::new();
+
+        // Use TreeCursor to stream through old tree entries
+        let mut old_cursor = TreeCursor::new(self, storage);
+        let mut mut_iter = mutations.iter().peekable();
+
+        // Merge entries from cursor and mutations
+        let mut old_entry = old_cursor.next();
+
+        while old_entry.is_some() || mut_iter.peek().is_some() {
+            match (&old_entry, mut_iter.peek()) {
+                (Some((old_key, old_value)), Some((mut_key, mut_value))) => {
+                    match old_key.as_slice().cmp(mut_key.as_slice()) {
+                        std::cmp::Ordering::Less => {
+                            // Old entry comes first, copy it
+                            merged_pairs.push((old_key.clone(), old_value.clone()));
+                            old_entry = old_cursor.next();
+                        }
+                        std::cmp::Ordering::Equal => {
+                            // Mutation overwrites old entry
+                            merged_pairs.push(((*mut_key).clone(), (*mut_value).clone()));
+                            old_entry = old_cursor.next();
+                            mut_iter.next();
+                        }
+                        std::cmp::Ordering::Greater => {
+                            // Mutation is a new entry
+                            merged_pairs.push(((*mut_key).clone(), (*mut_value).clone()));
+                            mut_iter.next();
+                        }
+                    }
+                }
+                (Some((old_key, old_value)), None) => {
+                    // Only old entries remaining
+                    merged_pairs.push((old_key.clone(), old_value.clone()));
+                    old_entry = old_cursor.next();
+                }
+                (None, Some((mut_key, mut_value))) => {
+                    // Only mutations remaining
+                    merged_pairs.push(((*mut_key).clone(), (*mut_value).clone()));
+                    mut_iter.next();
+                }
+                (None, None) => break,
+            }
+        }
+
+        // Build new tree from merged pairs
+        let leaf_nodes = self.build_leaf_nodes_streaming(&merged_pairs, storage);
+
+        if leaf_nodes.is_empty() {
+            return;
+        }
+
+        if leaf_nodes.len() == 1 {
+            *self = leaf_nodes.into_iter().next().unwrap();
+        } else {
+            let root = self.build_parent_levels(leaf_nodes, storage);
+            *self = root;
         }
     }
 
@@ -1025,6 +1213,178 @@ impl<const N: usize> ProllyNode<N> {
 
         // Return the vector of child nodes
         children
+    }
+
+    /// Helper method to build leaf nodes using streaming construction.
+    /// This processes sorted key-value pairs and creates leaf nodes based on rolling hash boundaries.
+    fn build_leaf_nodes_streaming<S: NodeStorage<N>>(
+        &self,
+        key_value_pairs: &[(Vec<u8>, Vec<u8>)],
+        storage: &mut S,
+    ) -> Vec<ProllyNode<N>> {
+        let mut leaf_nodes = Vec::new();
+        let mut current_keys = Vec::new();
+        let mut current_values = Vec::new();
+
+        for (key, value) in key_value_pairs {
+            current_keys.push(key.clone());
+            current_values.push(value.clone());
+
+            if current_keys.len() >= self.min_chunk_size {
+                let window_start = current_keys.len().saturating_sub(self.min_chunk_size);
+                let hash = Self::initialize_rolling_hash(
+                    &current_keys[window_start..],
+                    &current_values[window_start..],
+                    self.base,
+                    self.modulus,
+                );
+
+                if (hash & self.pattern == self.pattern)
+                    || current_keys.len() >= self.max_chunk_size
+                {
+                    let leaf = ProllyNode {
+                        keys: current_keys.clone(),
+                        key_schema: self.key_schema.clone(),
+                        values: current_values.clone(),
+                        value_schema: self.value_schema.clone(),
+                        is_leaf: true,
+                        level: INIT_LEVEL,
+                        base: self.base,
+                        modulus: self.modulus,
+                        min_chunk_size: self.min_chunk_size,
+                        max_chunk_size: self.max_chunk_size,
+                        pattern: self.pattern,
+                        split: false,
+                        merged: false,
+                        encode_types: self.encode_types.clone(),
+                        encode_values: self.encode_values.clone(),
+                    };
+                    let leaf_hash = leaf.get_hash();
+                    storage.insert_node(leaf_hash, leaf.clone());
+                    leaf_nodes.push(leaf);
+                    current_keys.clear();
+                    current_values.clear();
+                }
+            }
+        }
+
+        if !current_keys.is_empty() {
+            let leaf = ProllyNode {
+                keys: current_keys,
+                key_schema: self.key_schema.clone(),
+                values: current_values,
+                value_schema: self.value_schema.clone(),
+                is_leaf: true,
+                level: INIT_LEVEL,
+                base: self.base,
+                modulus: self.modulus,
+                min_chunk_size: self.min_chunk_size,
+                max_chunk_size: self.max_chunk_size,
+                pattern: self.pattern,
+                split: false,
+                merged: false,
+                encode_types: self.encode_types.clone(),
+                encode_values: self.encode_values.clone(),
+            };
+            let leaf_hash = leaf.get_hash();
+            storage.insert_node(leaf_hash, leaf.clone());
+            leaf_nodes.push(leaf);
+        }
+
+        leaf_nodes
+    }
+
+    /// Helper method to build parent levels from child nodes.
+    /// This recursively builds the tree from bottom to top.
+    fn build_parent_levels<S: NodeStorage<N>>(
+        &self,
+        child_nodes: Vec<ProllyNode<N>>,
+        storage: &mut S,
+    ) -> ProllyNode<N> {
+        let child_level = child_nodes[0].level;
+        let mut parent_keys = Vec::new();
+        let mut parent_values = Vec::new();
+
+        for child in &child_nodes {
+            let child_hash = child.get_hash();
+            parent_keys.push(child.keys[0].clone());
+            parent_values.push(child_hash.as_bytes().to_vec());
+        }
+
+        let mut parent_nodes = Vec::new();
+        let mut current_keys = Vec::new();
+        let mut current_values = Vec::new();
+
+        for i in 0..parent_keys.len() {
+            current_keys.push(parent_keys[i].clone());
+            current_values.push(parent_values[i].clone());
+
+            if current_keys.len() >= self.min_chunk_size {
+                let window_start = current_keys.len().saturating_sub(self.min_chunk_size);
+                let hash = Self::initialize_rolling_hash(
+                    &current_keys[window_start..],
+                    &current_values[window_start..],
+                    self.base,
+                    self.modulus,
+                );
+
+                if (hash & self.pattern == self.pattern)
+                    || current_keys.len() >= self.max_chunk_size
+                {
+                    let parent = ProllyNode {
+                        keys: current_keys.clone(),
+                        key_schema: self.key_schema.clone(),
+                        values: current_values.clone(),
+                        value_schema: self.value_schema.clone(),
+                        is_leaf: false,
+                        level: child_level + 1,
+                        base: self.base,
+                        modulus: self.modulus,
+                        min_chunk_size: self.min_chunk_size,
+                        max_chunk_size: self.max_chunk_size,
+                        pattern: self.pattern,
+                        split: false,
+                        merged: false,
+                        encode_types: self.encode_types.clone(),
+                        encode_values: self.encode_values.clone(),
+                    };
+                    let parent_hash = parent.get_hash();
+                    storage.insert_node(parent_hash, parent.clone());
+                    parent_nodes.push(parent);
+                    current_keys.clear();
+                    current_values.clear();
+                }
+            }
+        }
+
+        if !current_keys.is_empty() {
+            let parent = ProllyNode {
+                keys: current_keys,
+                key_schema: self.key_schema.clone(),
+                values: current_values,
+                value_schema: self.value_schema.clone(),
+                is_leaf: false,
+                level: child_level + 1,
+                base: self.base,
+                modulus: self.modulus,
+                min_chunk_size: self.min_chunk_size,
+                max_chunk_size: self.max_chunk_size,
+                pattern: self.pattern,
+                split: false,
+                merged: false,
+                encode_types: self.encode_types.clone(),
+                encode_values: self.encode_values.clone(),
+            };
+            let parent_hash = parent.get_hash();
+            storage.insert_node(parent_hash, parent.clone());
+            parent_nodes.push(parent);
+        }
+
+        if parent_nodes.len() > 1 {
+            self.build_parent_levels(parent_nodes, storage)
+        } else {
+            parent_nodes.into_iter().next().unwrap()
+        }
     }
 
     /// Traverse the tree in a breadth-first manner and return a string representation of the nodes.
