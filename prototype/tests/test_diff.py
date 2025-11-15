@@ -332,6 +332,60 @@ def test_differ_statistics(store):
     assert stats.nodes_compared == 0
 
 
+def test_diff_identical_values_no_change(store):
+    """Test that identical values don't produce diff events (regression test)."""
+    schema_json = '{"columns":["i","j","ckt"],"types":["INTEGER","INTEGER","TEXT"],"primary_key":["i","j","ckt"]}'
+
+    # Create tree1 with schema
+    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    tree1.insert_batch([("/s/lines", schema_json)], verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Create tree2 with identical schema
+    tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    tree2.insert_batch([("/s/lines", schema_json)], verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Hashes should be identical
+    assert hash1 == hash2, "Trees with identical data should have identical hashes"
+
+    # Diff should produce no events
+    events = list(diff(store, hash1, hash2))
+    assert len(events) == 0, f"Expected no diff events for identical values, got {events}"
+
+
+def test_diff_different_trees_same_value(store):
+    """Test that when different trees have the same value for a key, no diff is shown."""
+    schema_json = '{"columns":["i","j","ckt"],"types":["INTEGER","INTEGER","TEXT"],"primary_key":["i","j","ckt"]}'
+
+    # Create tree1 with schema + other data
+    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    tree1.insert_batch([
+        ("/s/lines", schema_json),
+        ("/d/table1/1", "data1"),
+        ("/d/table1/2", "data2"),
+    ], verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Create tree2 with same schema but different other data
+    tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    tree2.insert_batch([
+        ("/s/lines", schema_json),  # Same value!
+        ("/d/table1/1", "data1"),
+        ("/d/table1/3", "data3"),  # Different row
+    ], verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Trees should have different hashes (different data)
+    assert hash1 != hash2, "Trees with different data should have different hashes"
+
+    # Diff with prefix filter for /s/lines only
+    events = list(diff(store, hash1, hash2, prefix="/s/lines"))
+
+    # Should have NO events for /s/lines since the value is identical
+    assert len(events) == 0, f"Expected no diff events for identical value at /s/lines, got {events}"
+
+
 def test_differ_statistics_with_changes(store):
     """Test that Differ tracks statistics correctly with changes."""
     # Create tree1 with 100 entries
