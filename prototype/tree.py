@@ -252,77 +252,37 @@ class ProllyTree:
                 return self._build_internal_from_children(new_leaves, verbose)
 
         else:
-            # Internal node: partition mutations by child ranges, recursively rebuild
+            # Internal node: collect all entries and merge with mutations
+            # This is simpler and more correct than trying to partition mutations
             if verbose:
-                print(f"  -> Internal node with {len(node.values)} children, {len(node.keys)} separator keys")
+                print(f"  -> Internal node, collecting all entries to merge with {len(mutations)} mutations")
 
-            new_child_nodes = []  # List of actual Node objects (not hashes yet)
-            mut_idx = 0
+            # Collect all existing entries from this subtree
+            old_items = []
+            for key, value in self._items_from_node(node, ""):
+                old_items.append((key, value))
 
-            for child_idx in range(len(node.values)):
-                # Determine key range for this child
-                if child_idx == 0:
-                    lower = None  # -infinity
-                else:
-                    # Handle case where node has fewer keys than expected
-                    if child_idx - 1 < len(node.keys):
-                        lower = node.keys[child_idx - 1]
-                    else:
-                        lower = None
+            if verbose:
+                print(f"  -> Collected {len(old_items)} existing entries")
 
-                if child_idx < len(node.keys):
-                    upper = node.keys[child_idx]
-                else:
-                    upper = None  # +infinity
+            # Merge with mutations
+            merged = self._merge_sorted(old_items, mutations)
 
-                # Collect mutations for this child
-                child_mutations = []
-                while mut_idx < len(mutations):
-                    mut_key = mutations[mut_idx][0]
+            if verbose:
+                print(f"  -> Merged to {len(merged)} total entries")
 
-                    in_range = True
-                    if lower is not None and mut_key < lower:
-                        in_range = False
-                    if upper is not None and mut_key >= upper:
-                        in_range = False
+            # Rebuild from scratch
+            new_leaves = self._build_leaves(merged)
 
-                    if in_range:
-                        child_mutations.append(mutations[mut_idx])
-                        mut_idx += 1
-                    elif upper is not None and mut_key >= upper:
-                        # Beyond this child's range
-                        break
-                    else:
-                        mut_idx += 1
+            if verbose:
+                print(f"  -> Built {len(new_leaves)} leaf nodes")
 
-                if verbose:
-                    print(f"    -> {len(child_mutations)} mutations for this child")
-
-                # Get child and recursively rebuild
-                child_hash = node.values[child_idx]
-
-                if not child_mutations:
-                    # No mutations - reuse the existing child by its hash!
-                    # We need the actual node to get its first key for separators
-                    child_node = self._get_node(child_hash)
-                    # Mark this child as reused by storing the hash in a special way
-                    child_node._reused_hash = child_hash
-                    new_child_nodes.append(child_node)
-                else:
-                    # Has mutations - need to rebuild
-                    child = self._get_node(child_hash)
-                    new_child = self._rebuild_with_mutations(child, child_mutations, verbose)
-
-                    # Child rebuild might return a node that needs to be split into multiple
-                    # If it's a leaf that became too large, it would have been split in _rebuild_with_mutations
-                    # But if it's an internal node that's too large, we need to handle it here
-                    new_child_nodes.append(new_child)
-
-            # Now build parent nodes from the collected children
-            # Each child might have split, so we need to flatten and rebuild the parent structure
-            node = self._build_internal_from_children(new_child_nodes, verbose)
-            node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
-            return node
+            if len(new_leaves) == 1:
+                return new_leaves[0]
+            else:
+                node = self._build_internal_from_children(new_leaves, verbose)
+                node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
+                return node
 
     def _build_internal_from_children(self, children, verbose=False) -> Node | None:
         """
