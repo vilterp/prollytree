@@ -404,6 +404,49 @@ def diff_trees(old_hash: str, new_hash: str,
             print(f"  {key}: {value}")
 
 
+def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.prolly',
+                        cache_size: Optional[int] = None,
+                        prefix: Optional[str] = None):
+    """
+    Print the tree structure for a given root hash.
+
+    Args:
+        root_hash: Root hash of tree to visualize
+        store_spec: Store specification
+        cache_size: Cache size for cached stores
+        prefix: Optional key prefix to filter tree visualization
+    """
+    from tree import ProllyTree
+
+    print("="*80)
+    print("TREE STRUCTURE")
+    print("="*80)
+    print(f"Root hash: {root_hash}")
+    print(f"Store:     {store_spec}")
+    if prefix:
+        print(f"Prefix:    {prefix}")
+
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    # Create tree and load from root hash
+    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
+    tree.root = store.get_node(root_hash)
+
+    if not tree.root:
+        print(f"\nError: Root hash {root_hash} not found in store")
+        return
+
+    # If prefix is specified, we'll filter in the visualization
+    # Note: The _print_tree method doesn't natively support prefix filtering,
+    # but we can add it as a label and the user can still see the full tree structure
+    label = f"root={root_hash[:8]}"
+    if prefix:
+        label += f", filtering by prefix='{prefix}'"
+        print(f"\nNote: Full tree structure shown. Use 'dump' command to see filtered data.")
+
+    tree._print_tree(label=label)
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -500,6 +543,29 @@ Examples:
     diff_parser.add_argument('--prefix', type=str, default=None,
                         help='Key prefix to filter diff results')
 
+    # Print-tree subcommand
+    print_tree_parser = subparsers.add_parser('print-tree', help='Print tree structure by root hash',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Print tree structure
+  python cli.py print-tree a16b213fc2e7d598
+
+  # Print tree with custom store
+  python cli.py print-tree a16b213fc2e7d598 --store cached-file:///tmp/data
+
+  # Print tree with prefix label
+  python cli.py print-tree a16b213fc2e7d598 --prefix /d/buses
+        ''')
+
+    print_tree_parser.add_argument('root_hash', help='Root hash of tree to visualize')
+    print_tree_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
+    print_tree_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+    print_tree_parser.add_argument('--prefix', type=str, default=None,
+                        help='Key prefix label for the visualization')
+
     args = parser.parse_args()
 
     if args.command == 'import-sqlite':
@@ -529,6 +595,13 @@ Examples:
             store_spec=args.store,
             cache_size=args.cache_size,
             limit=args.limit,
+            prefix=args.prefix
+        )
+    elif args.command == 'print-tree':
+        print_tree_structure(
+            root_hash=args.root_hash,
+            store_spec=args.store,
+            cache_size=args.cache_size,
             prefix=args.prefix
         )
     else:
