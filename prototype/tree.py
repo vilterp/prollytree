@@ -178,6 +178,15 @@ class ProllyTree:
         if validate:
             is_valid, error_msg, position, prev_key, current_key = self.validate_sorted()
             if not is_valid:
+                # Print some debug info
+                print(f"\n!!! VALIDATION FAILED !!!")
+                print(f"  Position: {position}")
+                print(f"  Previous key: {prev_key}")
+                print(f"  Current key: {current_key}")
+                print(f"  Batch size: {len(mutations)}")
+                if mutations:
+                    print(f"  First mutation key: {mutations[0][0]}")
+                    print(f"  Last mutation key: {mutations[-1][0]}")
                 raise ValueError(f"Tree validation failed after batch insert: {error_msg} - {prev_key} > {current_key}")
 
         stats = self._summarize_ops()
@@ -311,9 +320,11 @@ class ProllyTree:
 
             # Now build parent nodes from the collected children
             # Each child might have split, so we need to flatten and rebuild the parent structure
-            return self._build_internal_from_children(new_child_nodes, verbose)
+            node = self._build_internal_from_children(new_child_nodes, verbose)
+            node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
+            return node
 
-    def _build_internal_from_children(self, children, verbose=False):
+    def _build_internal_from_children(self, children, verbose=False) -> Node | None:
         """
         Build internal node(s) from a list of children using rolling hash for splits.
 
@@ -371,7 +382,8 @@ class ProllyTree:
                     if (roll_hash < self.pattern and
                         len(current_internal.values) >= MIN_CHILDREN and
                         children_remaining >= MIN_CHILDREN):
-                        # Split point! Save current internal and start new one
+                        # Split point! Validate and save current internal
+                        current_internal.validate(self.store, context="_build_internal_from_children (split)")
                         internal_nodes.append(current_internal)
                         current_internal = Node(is_leaf=False)
                         roll_hash = self.seed  # Reset hash for next node
@@ -389,9 +401,12 @@ class ProllyTree:
                 child_hash = current_internal.values[0]
                 return self._get_node(child_hash)
             elif len(current_internal.values) > 1:
+                # Validate before adding
+                current_internal.validate(self.store, context="_build_internal_from_children (end)")
                 internal_nodes.append(current_internal)
             elif internal_nodes:
-                # Single child but we already have other nodes - add it
+                # Single child but we already have other nodes - validate and add it
+                current_internal.validate(self.store, context="_build_internal_from_children (single child)")
                 internal_nodes.append(current_internal)
 
         # Handle edge cases
@@ -409,6 +424,8 @@ class ProllyTree:
             elif len(node.values) == 0:
                 raise ValueError("Internal node has no children")
             else:
+                # Validate before returning
+                node.validate(self.store, context="_build_internal_from_children (return single)")
                 return node
         else:
             # Multiple internal nodes - build parent recursively
@@ -473,6 +490,10 @@ class ProllyTree:
                 leaf = Node(is_leaf=True)
                 leaf.keys = current_keys
                 leaf.values = current_values
+
+                # Validate leaf before adding
+                leaf.validate(self.store, context="_build_leaves")
+
                 leaves.append(leaf)
 
                 # Reset for next leaf
