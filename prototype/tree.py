@@ -325,6 +325,31 @@ class ProllyTree:
                     new_node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
                 return new_node
 
+    def _get_first_key(self, node):
+        """
+        Get the first actual key in a node's subtree.
+
+        For leaf nodes, returns keys[0].
+        For internal nodes, recursively descends to leftmost leaf.
+
+        Args:
+            node: Node to get first key from
+
+        Returns:
+            First key in subtree, or None if node has no keys
+        """
+        if node.is_leaf:
+            return node.keys[0] if len(node.keys) > 0 else None
+        else:
+            # Internal node - descend to leftmost child
+            if len(node.values) == 0:
+                return None
+            child_hash = node.values[0]
+            child = self._get_node(child_hash)
+            if child is None:
+                return None
+            return self._get_first_key(child)
+
     def _build_internal_from_children(self, children, verbose=False) -> Node | None:
         """
         Build internal node(s) from a list of children using rolling hash for splits.
@@ -365,9 +390,9 @@ class ProllyTree:
             # Add separator key (first key of next child)
             if i < len(children) - 1:
                 next_child = children[i + 1]
-                # Get the first key from the next child
-                if len(next_child.keys) > 0:
-                    separator = next_child.keys[0]
+                # Get the first actual key from the next child's subtree
+                separator = self._get_first_key(next_child)
+                if separator is not None:
                     current_internal.keys.append(separator)
 
                     # Update rolling hash with separator key
