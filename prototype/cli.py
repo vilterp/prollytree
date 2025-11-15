@@ -24,6 +24,7 @@ from typing import Optional, List
 
 from db import DB
 from store import CachedFSStore, create_store_from_spec
+from diff import diff, Added, Deleted, Modified
 
 
 def import_sqlite_table(db: DB, sqlite_conn: sqlite3.Connection, table_name: str,
@@ -313,6 +314,128 @@ def dump_database(store_spec: str, prefix: str, root_hash: Optional[str] = None,
             print(f"(showing first {limit}, {count - limit:,} more keys omitted)")
 
 
+def diff_databases(old_db_path: str, new_db_path: str,
+                   store_spec: str = 'cached-file://.prolly',
+                   pattern: float = 0.0001, seed: int = 42,
+                   cache_size: Optional[int] = None,
+                   batch_size: int = 1000,
+                   tables_filter: Optional[List[str]] = None,
+                   verbose_batches: bool = False,
+                   limit: Optional[int] = None):
+    """
+    Import two SQLite databases and diff them.
+
+    Args:
+        old_db_path: Path to old SQLite database
+        new_db_path: Path to new SQLite database
+        store_spec: Store specification
+        pattern: ProllyTree split pattern
+        seed: Random seed
+        cache_size: Cache size for cached stores
+        batch_size: Batch size for inserts
+        tables_filter: Optional list of specific tables to diff
+        verbose_batches: Show detailed batch statistics
+        limit: Maximum number of diff events to display (None for all)
+    """
+    print("="*80)
+    print("DIFF: Importing and comparing two SQLite databases")
+    print("="*80)
+
+    # Import old database
+    print("\n" + "="*80)
+    print("IMPORTING OLD DATABASE")
+    print("="*80)
+    db_old = import_sqlite_database(
+        db_path=old_db_path,
+        store_spec=store_spec,
+        pattern=pattern,
+        seed=seed,
+        cache_size=cache_size,
+        batch_size=batch_size,
+        tables_filter=tables_filter,
+        verbose_batches=verbose_batches
+    )
+    old_root_hash = db_old.get_root_hash()
+    print(f"\nOld database root hash: {old_root_hash}")
+
+    # Import new database
+    print("\n" + "="*80)
+    print("IMPORTING NEW DATABASE")
+    print("="*80)
+    db_new = import_sqlite_database(
+        db_path=new_db_path,
+        store_spec=store_spec,
+        pattern=pattern,
+        seed=seed,
+        cache_size=cache_size,
+        batch_size=batch_size,
+        tables_filter=tables_filter,
+        verbose_batches=verbose_batches
+    )
+    new_root_hash = db_new.get_root_hash()
+    print(f"\nNew database root hash: {new_root_hash}")
+
+    # Compute diff
+    print("\n" + "="*80)
+    print("COMPUTING DIFF")
+    print("="*80)
+
+    if old_root_hash == new_root_hash:
+        print("\nDatabases are identical (same root hash)")
+        return
+
+    store = db_old.get_store()
+
+    print(f"\nDiff events (old -> new):")
+    print("-"*80)
+
+    event_count = 0
+    added_count = 0
+    deleted_count = 0
+    modified_count = 0
+
+    for event in diff(store, old_root_hash, new_root_hash):
+        event_count += 1
+
+        if limit is None or event_count <= limit:
+            if isinstance(event, Added):
+                print(f"+ {event.key} = {event.value}")
+                added_count += 1
+            elif isinstance(event, Deleted):
+                print(f"- {event.key}")
+                deleted_count += 1
+            elif isinstance(event, Modified):
+                print(f"M {event.key}: {event.old_value} -> {event.new_value}")
+                modified_count += 1
+        else:
+            # Just count without printing
+            if isinstance(event, Added):
+                added_count += 1
+            elif isinstance(event, Deleted):
+                deleted_count += 1
+            elif isinstance(event, Modified):
+                modified_count += 1
+
+    print("-"*80)
+    print(f"\nDiff Summary:")
+    print(f"  Added:    {added_count:,}")
+    print(f"  Deleted:  {deleted_count:,}")
+    print(f"  Modified: {modified_count:,}")
+    print(f"  Total:    {event_count:,}")
+
+    if limit is not None and event_count > limit:
+        print(f"\n(showing first {limit}, {event_count - limit:,} more events omitted)")
+
+    # Show cache stats if using cached store
+    if isinstance(store, CachedFSStore):
+        print("\n" + "="*80)
+        print("CACHE STATISTICS")
+        print("="*80)
+        stats = store.get_cache_stats()
+        for key, value in stats.items():
+            print(f"  {key}: {value}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -338,8 +461,8 @@ Examples:
         ''')
 
     import_parser.add_argument('database', help='Path to SQLite database file')
-    import_parser.add_argument('--store', default=':memory:',
-                        help='Store spec: :memory:, file://path, cached-file://path')
+    import_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
     import_parser.add_argument('--pattern', type=float, default=0.0001,
                         help='Split pattern (default: 0.0001)')
     import_parser.add_argument('--seed', type=int, default=42,
@@ -369,8 +492,8 @@ Examples:
         ''')
 
     dump_parser.add_argument('prefix', help='Key prefix to dump')
-    dump_parser.add_argument('--store', required=True,
-                        help='Store spec: file://path, cached-file://path')
+    dump_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
     dump_parser.add_argument('--root-hash', type=str, default=None,
                         help='Root hash of tree to dump')
     dump_parser.add_argument('--cache-size', type=int, default=None,
@@ -380,9 +503,46 @@ Examples:
     dump_parser.add_argument('--limit', type=int, default=100,
                         help='Maximum rows to display (default: 100)')
 
+    # Diff subcommand
+    diff_parser = subparsers.add_parser('diff', help='Diff two SQLite databases',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Diff two databases
+  python cli.py diff old.sqlite new.sqlite
+
+  # Diff with custom store
+  python cli.py diff old.sqlite new.sqlite --store cached-file:///tmp/diff
+
+  # Diff specific tables only
+  python cli.py diff old.sqlite new.sqlite --tables users products
+
+  # Limit output
+  python cli.py diff old.sqlite new.sqlite --limit 100
+        ''')
+
+    diff_parser.add_argument('old_database', help='Path to old SQLite database')
+    diff_parser.add_argument('new_database', help='Path to new SQLite database')
+    diff_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
+    diff_parser.add_argument('--pattern', type=float, default=0.0001,
+                        help='Split pattern (default: 0.0001)')
+    diff_parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed (default: 42)')
+    diff_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+    diff_parser.add_argument('--batch-size', type=int, default=1000,
+                        help='Batch size for inserts (default: 1000)')
+    diff_parser.add_argument('--tables', nargs='+', default=None,
+                        help='Specific table names to diff')
+    diff_parser.add_argument('--verbose-batches', action='store_true',
+                        help='Show detailed batch statistics')
+    diff_parser.add_argument('--limit', type=int, default=None,
+                        help='Maximum diff events to display (default: all)')
+
     args = parser.parse_args()
 
-    if args.command == 'import':
+    if args.command == 'import-sqlite':
         import_sqlite_database(
             db_path=args.database,
             store_spec=args.store,
@@ -400,6 +560,19 @@ Examples:
             root_hash=args.root_hash,
             cache_size=args.cache_size,
             reconstruct=not args.no_reconstruct,
+            limit=args.limit
+        )
+    elif args.command == 'diff':
+        diff_databases(
+            old_db_path=args.old_database,
+            new_db_path=args.new_database,
+            store_spec=args.store,
+            pattern=args.pattern,
+            seed=args.seed,
+            cache_size=args.cache_size,
+            batch_size=args.batch_size,
+            tables_filter=args.tables,
+            verbose_batches=args.verbose_batches,
             limit=args.limit
         )
     else:
