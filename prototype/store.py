@@ -170,7 +170,6 @@ class CachedFSStore:
         self.cache_hits = 0
         self.cache_misses = 0
         self.cache_evictions = 0
-        self.puts_already_exists = 0
 
     def put_node(self, node_hash: str, node: Node) -> None:
         """Store a node to both cache and filesystem."""
@@ -178,17 +177,9 @@ class CachedFSStore:
         if node_hash in self.cache:
             # Already have this node, just refresh it in cache
             self._cache_put(node_hash, node)
-            self.puts_already_exists += 1
             return
 
-        # Not in cache - check if it exists in filesystem
-        if self.fs_store.get_node(node_hash) is not None:
-            # Node exists in filesystem, just add to cache
-            self._cache_put(node_hash, node)
-            self.puts_already_exists += 1
-            return
-
-        # New node - write to filesystem first (tracks size)
+        # Not in cache - write to filesystem first (tracks size)
         self.fs_store.put_node(node_hash, node)
 
         # Add to cache (will evict if needed)
@@ -248,7 +239,6 @@ class CachedFSStore:
             'cache_hits': self.cache_hits,
             'cache_misses': self.cache_misses,
             'cache_evictions': self.cache_evictions,
-            'puts_already_exists': self.puts_already_exists,
             'hit_rate': f"{hit_rate:.1f}%"
         }
 

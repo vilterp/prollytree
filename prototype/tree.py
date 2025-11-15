@@ -496,17 +496,53 @@ class ProllyTree:
         }
         return stats
 
-    def verify(self):
-        """Verify tree structure and return all key-value pairs in order"""
-        result = []
-        self._collect_leaves(self.root, result)
-        return result
+    def items(self, prefix=""):
+        """
+        Generator that yields (key, value) pairs with keys matching the given prefix.
 
-    def _collect_leaves(self, node, result):
-        """Collect all leaf entries in order"""
+        Navigates to the prefix and yields items until the cursor exceeds the prefix.
+
+        Args:
+            prefix: Key prefix to filter (default: "" returns all items)
+
+        Yields:
+            Tuples of (key, value) for keys matching the prefix
+        """
+        yield from self._items_from_node(self.root, prefix)
+
+    def _items_from_node(self, node, prefix):
+        """Recursively yield items from node and its children that match prefix"""
         if node.is_leaf:
-            result.extend(zip(node.keys, node.values))
+            # Yield matching leaf entries
+            for key, value in zip(node.keys, node.values):
+                if key.startswith(prefix):
+                    yield (key, value)
+                elif key > prefix + '\xff':  # Past the end of prefix range
+                    # We've gone past the prefix range
+                    return
         else:
-            for child_hash in node.values:
+            # For internal nodes, traverse children
+            for i, child_hash in enumerate(node.values):
+                # Get the range this child covers
+                # child contains keys: [lower_bound, upper_bound)
+                # where lower_bound = node.keys[i-1] (or -inf for i=0)
+                # and upper_bound = node.keys[i] (or +inf for last child)
+
+                lower_bound = node.keys[i-1] if i > 0 else ""
+                upper_bound = node.keys[i] if i < len(node.keys) else None
+
+                # Skip if this child is entirely before the prefix
+                if upper_bound is not None and upper_bound <= prefix:
+                    continue
+
+                # Skip if this child is entirely after the prefix range
+                if lower_bound > prefix + '\xff':
+                    break
+
+                # This child might contain matching keys
                 child = self._get_node(child_hash)
-                self._collect_leaves(child, result)
+                yield from self._items_from_node(child, prefix)
+
+    def verify(self):
+        """Verify tree structure and return all key-value pairs in order (for backwards compatibility)"""
+        return list(self.items())

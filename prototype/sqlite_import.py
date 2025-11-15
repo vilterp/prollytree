@@ -214,7 +214,6 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store=None,
             print(f"  Cache: {cache_stats['cache_evictions']:,} evictions, "
                   f"{cache_stats['cache_size']:,}/{cache_stats['max_cache_size']:,} entries, "
                   f"{cache_stats['hit_rate']} hit rate")
-            print(f"  Deduplication: {cache_stats['puts_already_exists']:,} nodes already existed")
 
             # Print size distributions
             print()
@@ -346,7 +345,7 @@ def import_directory(dir_path, pattern=0.0001, seed=42, batch_size=1000, store_s
     return results
 
 
-def dump_keys(store_spec, prefix, cache_size=None, reconstruct_rows=False):
+def dump_keys(store_spec, prefix, cache_size=None, reconstruct_rows=False, root_hash=None):
     """
     Dump all keys with a given prefix from the store.
 
@@ -355,7 +354,10 @@ def dump_keys(store_spec, prefix, cache_size=None, reconstruct_rows=False):
         prefix: Key prefix to filter (e.g., '/d/buses', '/s/')
         cache_size: Cache size for cached stores
         reconstruct_rows: If True, reconstruct row dicts from schema for /d/ keys
+        root_hash: Optional root hash to load specific tree version
     """
+    from tree import ProllyTree
+
     print(f"Opening store: {store_spec}")
     store = create_store_from_spec(store_spec, cache_size=cache_size)
 
@@ -367,70 +369,55 @@ def dump_keys(store_spec, prefix, cache_size=None, reconstruct_rows=False):
         print("Store is empty")
         return
 
-    # Scan all nodes in the store directly to find keys
-    print(f"Scanning for keys with prefix: {prefix}")
+    # Create tree - if root_hash provided, load that tree
+    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
-    # For FileSystemStore or CachedFSStore, we need to scan the filesystem
-    if isinstance(store, CachedFSStore):
-        base_path = store.fs_store.base_path
+    if root_hash:
+        # Load specific tree version
+        print(f"Loading tree from root hash: {root_hash}")
+        tree.root = store.get_node(root_hash)
+        if not tree.root:
+            print(f"Error: Root hash {root_hash} not found in store")
+            return
     else:
-        base_path = store.base_path if hasattr(store, 'base_path') else None
+        # Try to find a root by scanning - this is a heuristic
+        # In practice, the user should provide the root hash
+        print("Warning: No root hash provided, attempting to reconstruct tree...")
+        print("For accurate results, provide --root-hash parameter")
 
-    if not base_path:
-        print("Error: Can only dump from filesystem-based stores")
-        return
-
-    # Scan all nodes to find data keys
-    all_keys = []
-    for subdir in os.listdir(base_path):
-        subdir_path = os.path.join(base_path, subdir)
-        if os.path.isdir(subdir_path):
-            for filename in os.listdir(subdir_path):
-                node_hash = filename
-                node = store.get_node(node_hash)
-                if node and node.is_leaf:
-                    # Leaf nodes contain the actual key-value pairs
-                    for i, key in enumerate(node.keys):
-                        if key.startswith(prefix):
-                            all_keys.append((key, node.values[i]))
-
-    all_keys.sort(key=lambda x: x[0])
-    print(f"Found {len(all_keys):,} keys matching prefix\n")
+    # Use the new items() generator
+    print(f"Fetching keys with prefix: {prefix}")
 
     # If reconstructing rows, we need to load schemas first
     schemas = {}
     if reconstruct_rows and prefix.startswith('/d/'):
-        # Scan for schema keys
-        for subdir in os.listdir(base_path):
-            subdir_path = os.path.join(base_path, subdir)
-            if os.path.isdir(subdir_path):
-                for filename in os.listdir(subdir_path):
-                    node = store.get_node(filename)
-                    if node and node.is_leaf:
-                        for i, key in enumerate(node.keys):
-                            if key.startswith('/s/'):
-                                table_name = key[3:]  # Remove '/s/' prefix
-                                schemas[table_name] = json.loads(node.values[i])
+        for schema_key, schema_value in tree.items('/s/'):
+            table_name = schema_key[3:]  # Remove '/s/' prefix
+            schemas[table_name] = json.loads(schema_value)
 
     # Display results
-    for key, value in all_keys[:100]:  # Limit to first 100 for display
-        if reconstruct_rows and key.startswith('/d/'):
-            # Extract table name from key
-            parts = key.split('/')
-            table_name = parts[2] if len(parts) > 2 else None
+    count = 0
+    for key, value in tree.items(prefix):
+        count += 1
+        if count <= 100:  # Limit display to first 100
+            if reconstruct_rows and key.startswith('/d/'):
+                # Extract table name from key
+                parts = key.split('/')
+                table_name = parts[2] if len(parts) > 2 else None
 
-            if table_name and table_name in schemas:
-                schema = schemas[table_name]
-                row_values = json.loads(value)
-                row_dict = dict(zip(schema['columns'], row_values))
-                print(f"{key} => {json.dumps(row_dict, separators=(',', ':'))}")
+                if table_name and table_name in schemas:
+                    schema = schemas[table_name]
+                    row_values = json.loads(value)
+                    row_dict = dict(zip(schema['columns'], row_values))
+                    print(f"{key} => {json.dumps(row_dict, separators=(',', ':'))}")
+                else:
+                    print(f"{key} => {value}")
             else:
                 print(f"{key} => {value}")
-        else:
-            print(f"{key} => {value}")
 
-    if len(all_keys) > 100:
-        print(f"\n... and {len(all_keys) - 100:,} more keys")
+    print(f"\nTotal: {count:,} keys found")
+    if count > 100:
+        print(f"(showing first 100, {count - 100:,} more keys omitted)")
 
 
 if __name__ == "__main__":
@@ -499,6 +486,8 @@ Examples:
                         help='Cache size for cached stores')
     dump_parser.add_argument('--reconstruct', action='store_true',
                         help='Reconstruct row objects from schema (for /d/ keys)')
+    dump_parser.add_argument('--root-hash', type=str, default=None,
+                        help='Root hash of tree to dump (required for accurate dump)')
 
     args = parser.parse_args()
 
@@ -533,7 +522,8 @@ Examples:
             store_spec=args.store,
             prefix=args.prefix,
             cache_size=args.cache_size,
-            reconstruct_rows=args.reconstruct
+            reconstruct_rows=args.reconstruct,
+            root_hash=args.root_hash
         )
     else:
         parser.print_help()
