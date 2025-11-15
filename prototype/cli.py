@@ -308,7 +308,7 @@ def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file
 
 
 def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly',
-               cache_size: Optional[int] = None, dry_run: bool = True):
+               cache_size: Optional[int] = None, dry_run: bool = False):
     """
     Run garbage collection on the store.
 
@@ -348,7 +348,7 @@ def gc_command(root_hashes: List[str], store_spec: str = 'cached-file://.prolly'
     if dry_run:
         print()
         print("DRY RUN: No nodes were removed.")
-        print("To actually remove garbage, run with --no-dry-run")
+        print("To actually remove garbage, run without --dry-run")
     else:
         print()
         print(f"SUCCESS: Removed {stats.garbage_nodes:,} garbage nodes from store.")
@@ -549,26 +549,26 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Dry run - show what would be removed
+  # Remove garbage nodes (default behavior)
   python cli.py gc 65161256c9d66c53 ce615a7ec196650a --store cached-file://.prolly
 
-  # Actually remove garbage nodes
-  python cli.py gc 65161256c9d66c53 --no-dry-run
+  # Dry run - show what would be removed without removing
+  python cli.py gc 65161256c9d66c53 --dry-run
 
   # Keep multiple roots
   python cli.py gc root1 root2 root3 --store cached-file://.prolly
 
 Note: Garbage collection removes all nodes not reachable from the specified
-root hashes. This is useful for cleaning up old tree versions. Always run
-with --dry-run first to verify what will be removed.
+root hashes. This is useful for cleaning up old tree versions. Use --dry-run
+to preview what will be removed before actually removing it.
         ''')
     gc_parser.add_argument('roots', nargs='+', help='Root hashes to keep (everything else is garbage)')
     gc_parser.add_argument('--store', default='cached-file://.prolly',
                         help='Store spec (default: cached-file://.prolly)')
     gc_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
-    gc_parser.add_argument('--no-dry-run', action='store_true',
-                        help='Actually remove garbage (default is dry run)')
+    gc_parser.add_argument('--dry-run', action='store_true',
+                        help='Show what would be removed without actually removing (default: actually remove)')
 
     args = parser.parse_args()
 
@@ -636,7 +636,7 @@ with --dry-run first to verify what will be removed.
             root_hashes=args.roots,
             store_spec=args.store,
             cache_size=args.cache_size,
-            dry_run=not args.no_dry_run
+            dry_run=args.dry_run
         )
     else:
         parser.print_help()
