@@ -251,16 +251,16 @@ def test_insertion_order_independence_different_seeds_fail():
     if different seeds produced the same structure, our tests wouldn't prove anything.
     """
     store = MemoryStore()
-    # Use more keys to ensure splits happen
+    # Use more keys and higher pattern to ensure splits happen
     keys = [(i, f"value_{i}") for i in range(500)]
 
-    # Build with seed 42
-    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    # Build with seed 42 - use higher pattern to trigger splits
+    tree1 = ProllyTree(pattern=0.25, seed=42, store=store)
     tree1.insert_batch(sorted(keys), verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Build with different seed
-    tree2 = ProllyTree(pattern=0.0001, seed=99, store=store)
+    tree2 = ProllyTree(pattern=0.25, seed=99, store=store)
     tree2.insert_batch(sorted(keys), verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
