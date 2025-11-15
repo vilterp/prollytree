@@ -122,9 +122,24 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store=None,
             print("Skipping empty table")
             continue
 
-        # Get column names
+        # Get column names and types
         cursor.execute(f"PRAGMA table_info({table_name})")
-        columns = [row[1] for row in cursor.fetchall()]
+        table_info = cursor.fetchall()
+        columns = [row[1] for row in table_info]
+        column_types = [row[2] for row in table_info]
+
+        # Store schema as first mutation
+        schema = {
+            'columns': columns,
+            'types': column_types,
+            'primary_key': pk_columns
+        }
+        schema_key = f"/s/{table_name}"
+        schema_value = json.dumps(schema, separators=(',', ':'))
+
+        # Insert schema first
+        tree.insert_batch([(schema_key, schema_value)], verbose=False)
+        print(f"Stored schema: {len(columns)} columns")
 
         # Process in batches
         table_start = time.time()
@@ -149,18 +164,19 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store=None,
                 # Handle rowid case
                 if pk_columns == ["rowid"]:
                     pk_value = str(row[0])
-                    # Create row dict from remaining columns
-                    row_dict = dict(zip(columns, row[1:]))
+                    # Get values from remaining columns
+                    row_values = list(row[1:])
                 else:
-                    # Create row dict
+                    # Build compound primary key from row
                     row_dict = dict(zip(columns, row))
-                    # Build compound primary key
                     pk_parts = [str(row_dict[col]) for col in pk_columns]
                     pk_value = "/".join(pk_parts)
+                    # Get all values
+                    row_values = list(row)
 
-                # Create key-value pair
-                key = f"/{table_name}/{pk_value}"
-                value = json.dumps(row_dict, separators=(',', ':'))
+                # Create key-value pair (data stored as array)
+                key = f"/d/{table_name}/{pk_value}"
+                value = json.dumps(row_values, separators=(',', ':'))
 
                 mutations.append((key, value))
 
