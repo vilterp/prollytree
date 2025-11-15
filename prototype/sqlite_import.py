@@ -22,7 +22,7 @@ import time
 import sys
 import argparse
 from tree import ProllyTree
-from store import create_store_from_spec
+from store import create_store_from_spec, CachedFSStore
 
 # Force unbuffered output
 sys.stdout.reconfigure(line_buffering=True)
@@ -150,6 +150,16 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
         print(f"\nCompleted {table_name}: {rows_processed:,} rows in {table_time:.2f}s "
               f"({table_rate:,.0f} rows/sec)")
 
+        # Show cumulative node creation stats and size distributions
+        if isinstance(tree.store, CachedFSStore):
+            creation_stats = tree.store.get_creation_stats()
+            print(f"  Cumulative: {creation_stats['total_leaves_created']:,} leaves, "
+                  f"{creation_stats['total_internals_created']:,} internals created")
+
+            # Print size distributions
+            print()
+            tree.store.print_distributions(bucket_count=10)
+
         total_rows += rows_processed
 
     total_time = time.time() - total_start
@@ -166,7 +176,6 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
     print(f"  Total nodes in storage: {tree.store.count_nodes():,}")
 
     # Show cache stats if using CachedFSStore
-    from store import CachedFSStore
     if isinstance(tree.store, CachedFSStore):
         stats = tree.store.get_cache_stats()
         print(f"\nCache statistics:")

@@ -22,6 +22,7 @@ from typing import Protocol, Optional
 import json
 import os
 from collections import OrderedDict
+from stats import Stats
 
 
 class Node:
@@ -86,6 +87,9 @@ class FileSystemStore:
         self.base_path = base_path
         os.makedirs(base_path, exist_ok=True)
 
+        # Statistics tracking
+        self.stats = Stats()
+
     def _node_path(self, node_hash: str) -> str:
         """Get the file path for a node hash."""
         # Use first 2 chars as subdirectory for better filesystem performance
@@ -113,8 +117,17 @@ class FileSystemStore:
     def put_node(self, node_hash: str, node: Node) -> None:
         """Store a node to filesystem."""
         path = self._node_path(node_hash)
+        serialized = self._serialize_node(node)
+
+        # Track node size using Stats
+        size = len(serialized.encode('utf-8'))
+        if node.is_leaf:
+            self.stats.record_new_leaf(size)
+        else:
+            self.stats.record_new_internal(size)
+
         with open(path, 'w') as f:
-            f.write(self._serialize_node(node))
+            f.write(serialized)
 
     def get_node(self, node_hash: str) -> Optional[Node]:
         """Retrieve a node from filesystem."""
@@ -132,6 +145,10 @@ class FileSystemStore:
             if os.path.isdir(subdir_path):
                 count += len([f for f in os.listdir(subdir_path) if os.path.isfile(os.path.join(subdir_path, f))])
         return count
+
+    def get_size_stats(self):
+        """Return node size statistics."""
+        return self.stats.get_size_stats()
 
 
 class CachedFSStore:
@@ -155,7 +172,7 @@ class CachedFSStore:
 
     def put_node(self, node_hash: str, node: Node) -> None:
         """Store a node to both cache and filesystem."""
-        # Write to filesystem first
+        # Write to filesystem first (tracks size)
         self.fs_store.put_node(node_hash, node)
 
         # Add to cache (will evict if needed)
@@ -215,6 +232,18 @@ class CachedFSStore:
             'cache_misses': self.cache_misses,
             'hit_rate': f"{hit_rate:.1f}%"
         }
+
+    def get_size_stats(self):
+        """Return node size statistics from underlying filesystem store."""
+        return self.fs_store.get_size_stats()
+
+    def get_creation_stats(self):
+        """Return cumulative node creation statistics from underlying filesystem store."""
+        return self.fs_store.stats.get_creation_stats()
+
+    def print_distributions(self, bucket_count: int = 10):
+        """Print size distributions for leaf and internal nodes."""
+        self.fs_store.stats.print_distributions(bucket_count)
 
 
 def create_store_from_spec(spec: str, cache_size: Optional[int] = None) -> Store:

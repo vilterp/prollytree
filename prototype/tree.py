@@ -150,6 +150,13 @@ class ProllyTree:
                 summary_parts.append(f"{hits_delta} cache hits")
                 summary_parts.append(f"{misses_delta} cache misses")
 
+                # Add average node sizes from CachedFSStore
+                size_stats = self.store.get_size_stats()
+                if size_stats['avg_leaf_size'] > 0:
+                    summary_parts.append(f"avg leaf: {size_stats['avg_leaf_size']:.0f}B")
+                if size_stats['avg_internal_size'] > 0:
+                    summary_parts.append(f"avg internal: {size_stats['avg_internal_size']:.0f}B")
+
             print("; ".join(summary_parts))
 
         return stats
