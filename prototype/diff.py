@@ -18,7 +18,7 @@ based on content hashes.
 """
 
 from dataclasses import dataclass
-from typing import Any, Iterator, Union
+from typing import Any, Iterator, Union, Optional, Tuple
 from store import Store
 
 
@@ -66,6 +66,162 @@ class DiffStats:
         return f"DiffStats(subtrees_skipped={self.subtrees_skipped}, nodes_compared={self.nodes_compared})"
 
 
+class TreeCursor:
+    """
+    A cursor for traversing a ProllyTree in sorted key order.
+
+    The cursor abstracts away the tree structure (leaf vs internal nodes)
+    and provides a uniform interface for iterating through key-value pairs.
+    It also supports peeking at the next hash to enable efficient subtree skipping.
+    """
+
+    def __init__(self, store: Store, root_hash: str):
+        """
+        Initialize cursor at the beginning of the tree.
+
+        Args:
+            store: Storage backend
+            root_hash: Root hash of tree to traverse
+        """
+        self.store = store
+        self.root_hash = root_hash
+        # Stack of (node, index) tuples representing current position
+        # index points to next unvisited child/entry
+        self.stack = []
+        # Current key-value pair (None until first next() call)
+        self.current = None
+        # Initialize by descending to first leaf
+        self._descend_to_first(root_hash)
+
+    def _descend_to_first(self, node_hash: str):
+        """Descend to the leftmost leaf starting from node_hash."""
+        node = self.store.get_node(node_hash)
+        if node is None:
+            return
+
+        while not node.is_leaf:
+            # Internal node: push it and descend into first child
+            self.stack.append((node, 0))
+            if len(node.values) == 0:
+                return
+            child_hash = node.values[0]
+            node = self.store.get_node(child_hash)
+            if node is None:
+                return
+
+        # At a leaf node, push it with index 0
+        self.stack.append((node, 0))
+
+    def peek_next_hash(self) -> Optional[str]:
+        """
+        Peek at the next subtree hash that will be traversed.
+
+        Returns None if at a leaf or no more subtrees.
+        This is used to skip identical subtrees during diff.
+        """
+        if not self.stack:
+            return None
+
+        # Look for the next child hash we'll descend into
+        for node, idx in reversed(self.stack):
+            if not node.is_leaf and idx < len(node.values):
+                return node.values[idx]
+
+        return None
+
+    def next(self) -> Optional[Tuple[Any, Any]]:
+        """
+        Advance to the next key-value pair.
+
+        Returns:
+            (key, value) tuple, or None if exhausted
+        """
+        if not self.stack:
+            self.current = None
+            return None
+
+        # Get current node and index
+        node, idx = self.stack[-1]
+
+        if node.is_leaf:
+            # At a leaf: return current entry and advance
+            if idx < len(node.keys):
+                key = node.keys[idx]
+                value = node.values[idx]
+                self.current = (key, value)
+
+                # Advance index
+                self.stack[-1] = (node, idx + 1)
+
+                # If we've exhausted this leaf, pop up
+                if idx + 1 >= len(node.keys):
+                    self.stack.pop()
+                    self._advance_to_next_leaf()
+
+                return self.current
+            else:
+                # Shouldn't happen, but handle gracefully
+                self.stack.pop()
+                return self.next()
+        else:
+            # At internal node: shouldn't happen in normal traversal
+            # This means we need to descend to next child
+            if idx < len(node.values):
+                child_hash = node.values[idx]
+                # Advance the index for this internal node
+                self.stack[-1] = (node, idx + 1)
+                # Descend into this child
+                self._descend_to_first(child_hash)
+                return self.next()
+            else:
+                # Exhausted this internal node
+                self.stack.pop()
+                return self.next()
+
+    def _advance_to_next_leaf(self):
+        """After exhausting a leaf, move to the next leaf."""
+        while self.stack:
+            node, idx = self.stack[-1]
+
+            if not node.is_leaf:
+                # Internal node: try next child
+                if idx < len(node.values):
+                    child_hash = node.values[idx]
+                    # Increment index for next time
+                    self.stack[-1] = (node, idx + 1)
+                    # Descend into child
+                    self._descend_to_first(child_hash)
+                    return
+                else:
+                    # Exhausted this internal node
+                    self.stack.pop()
+            else:
+                # Leaf node that's exhausted
+                self.stack.pop()
+
+    def skip_subtree(self, subtree_hash: str):
+        """
+        Skip over a subtree entirely without visiting its entries.
+
+        Args:
+            subtree_hash: Hash of subtree to skip
+        """
+        # Find this hash in our stack and advance past it
+        for i in range(len(self.stack) - 1, -1, -1):
+            node, idx = self.stack[i]
+            if not node.is_leaf and idx > 0 and idx - 1 < len(node.values):
+                if node.values[idx - 1] == subtree_hash:
+                    # We just descended into this subtree, need to skip it
+                    # Pop everything below and including this level
+                    self.stack = self.stack[:i+1]
+                    # The index is already advanced, so just continue
+                    self._advance_to_next_leaf()
+                    return
+
+        # If we can't find it, just continue normally
+        self._advance_to_next_leaf()
+
+
 class Differ:
     """
     Diff two ProllyTree structures with statistics tracking.
@@ -83,7 +239,10 @@ class Differ:
 
     def diff(self, old_hash: str, new_hash: str, prefix: str = None) -> Iterator[DiffEvent]:
         """
-        Compute differences between two trees.
+        Compute differences between two trees using cursor-based traversal.
+
+        This algorithm handles trees with different structures by comparing
+        key-value pairs directly, regardless of tree shape.
 
         Args:
             old_hash: Root hash of the old tree
@@ -102,21 +261,71 @@ class Differ:
             self.stats.subtrees_skipped += 1
             return
 
-        old_node = self.store.get_node(old_hash)
-        new_node = self.store.get_node(new_hash)
+        # Create cursors for both trees
+        old_cursor = TreeCursor(self.store, old_hash)
+        new_cursor = TreeCursor(self.store, new_hash)
 
-        if old_node is None and new_node is None:
-            return
-        elif old_node is None:
-            # All entries in new_node are additions
-            yield from self._yield_all_additions(new_node)
-        elif new_node is None:
-            # All entries in old_node are deletions
-            yield from self._yield_all_deletions(old_node)
-        else:
-            # Both nodes exist - compute diff
-            self.stats.nodes_compared += 1
-            yield from self._diff_nodes(old_node, new_node)
+        # Get first entries
+        old_entry = old_cursor.next()
+        new_entry = new_cursor.next()
+
+        # Merge-like traversal of both trees
+        while old_entry is not None or new_entry is not None:
+            # Check for subtree skipping opportunity
+            if old_entry is not None and new_entry is not None:
+                old_next_hash = old_cursor.peek_next_hash()
+                new_next_hash = new_cursor.peek_next_hash()
+
+                if old_next_hash and new_next_hash and old_next_hash == new_next_hash:
+                    # Same subtree coming up - skip it!
+                    self.stats.subtrees_skipped += 1
+                    old_cursor.skip_subtree(old_next_hash)
+                    new_cursor.skip_subtree(new_next_hash)
+                    old_entry = old_cursor.next()
+                    new_entry = new_cursor.next()
+                    continue
+
+            if old_entry is None:
+                # Only new entries remain - all additions
+                while new_entry is not None:
+                    if self._matches_prefix(new_entry[0]):
+                        yield Added(new_entry[0], new_entry[1])
+                    new_entry = new_cursor.next()
+                break
+
+            if new_entry is None:
+                # Only old entries remain - all deletions
+                while old_entry is not None:
+                    if self._matches_prefix(old_entry[0]):
+                        yield Deleted(old_entry[0], old_entry[1])
+                    old_entry = old_cursor.next()
+                break
+
+            # Both have entries - compare keys
+            old_key, old_value = old_entry
+            new_key, new_value = new_entry
+
+            if old_key < new_key:
+                # Key only in old tree - deleted
+                if self._matches_prefix(old_key):
+                    yield Deleted(old_key, old_value)
+                old_entry = old_cursor.next()
+            elif old_key > new_key:
+                # Key only in new tree - added
+                if self._matches_prefix(new_key):
+                    yield Added(new_key, new_value)
+                new_entry = new_cursor.next()
+            else:
+                # Same key in both trees
+                if old_value != new_value:
+                    # Value changed - modified
+                    if self._matches_prefix(old_key):
+                        yield Modified(old_key, old_value, new_value)
+                # else: values are identical, no diff event needed
+
+                # Advance both cursors
+                old_entry = old_cursor.next()
+                new_entry = new_cursor.next()
 
     def get_stats(self) -> DiffStats:
         """Get statistics from the most recent diff operation."""

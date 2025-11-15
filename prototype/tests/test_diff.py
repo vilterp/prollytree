@@ -196,20 +196,20 @@ def test_diff_with_string_keys(store):
     """Test diff with string keys (like database tables)."""
     # Create tree1
     tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree1.insert_batch([
+    tree1.insert_batch(sorted([
         ("/d/users/1", "Alice"),
         ("/d/users/2", "Bob"),
         ("/d/products/1", "Laptop"),
-    ], verbose=False)
+    ]), verbose=False)
     hash1 = tree1._hash_node(tree1.root)
 
     # Create tree2 with changes
     tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
-    tree2.insert_batch([
+    tree2.insert_batch(sorted([
         ("/d/users/1", "Alice Smith"),  # Modified
         ("/d/users/3", "Charlie"),       # Added
         ("/d/products/1", "Laptop"),     # Unchanged
-    ], verbose=False)
+    ]), verbose=False)
     hash2 = tree2._hash_node(tree2.root)
 
     # Diff tree1 -> tree2
@@ -445,6 +445,50 @@ def test_diff_same_key_value_different_tree_structure(store):
     assert len(events) > 0, "Expected some diff events for other keys"
 
 
+def test_diff_same_key_different_surrounding_data(store):
+    """
+    Test that identical key-value pairs are recognized even when surrounded by different data.
+
+    Tree1: 100 "a*" keys + key "b"
+    Tree2: key "b" + 100 "c*" keys
+
+    Both have "b" with the same value, so it should NOT appear in diff.
+    """
+    # Tree1: has key "b" plus 100 "a*" keys
+    tree1 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    data1 = [("b", "VALUE")]
+    for i in range(100):
+        data1.append((f"a{i:03d}", f"x{i}"))
+    tree1.insert_batch(sorted(data1), verbose=False)
+    hash1 = tree1._hash_node(tree1.root)
+
+    # Tree2: has key "b" with SAME value, plus different "c*" keys
+    tree2 = ProllyTree(pattern=0.0001, seed=42, store=store)
+    data2 = [("b", "VALUE")]
+    for i in range(100):
+        data2.append((f"c{i:03d}", f"y{i}"))
+    tree2.insert_batch(sorted(data2), verbose=False)
+    hash2 = tree2._hash_node(tree2.root)
+
+    # Diff should show: 100 deletions (a*), no change for "b", 100 additions (c*)
+    events = list(diff(store, hash1, hash2))
+
+    # Check for "b"
+    b_events = [e for e in events if (
+        (isinstance(e, (Added, Deleted)) and e.key == "b") or
+        (isinstance(e, Modified) and e.key == "b")
+    )]
+
+    assert len(b_events) == 0, f"Expected no events for 'b' (identical value), got {b_events}"
+
+    # Verify we got the expected changes for other keys
+    deleted_keys = {e.key for e in events if isinstance(e, Deleted)}
+    added_keys = {e.key for e in events if isinstance(e, Added)}
+
+    assert len(deleted_keys) == 100, f"Expected 100 deletions, got {len(deleted_keys)}"
+    assert len(added_keys) == 100, f"Expected 100 additions, got {len(added_keys)}"
+
+
 def test_diff_reports_identical_value_as_deleted_added_bug(store):
     """
     FAILING TEST: Bug where identical key-value pairs are reported as Deleted+Added.
@@ -515,7 +559,6 @@ def test_differ_statistics_with_changes(store):
 
     # Check statistics
     stats = differ.get_stats()
-    # Should have compared at least the root node
-    assert stats.nodes_compared >= 1
     # subtrees_skipped can be 0 or more depending on tree structure
     assert stats.subtrees_skipped >= 0
+    # Note: nodes_compared is no longer tracked in cursor-based algorithm
