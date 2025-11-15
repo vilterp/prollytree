@@ -214,6 +214,7 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store=None,
             print(f"  Cache: {cache_stats['cache_evictions']:,} evictions, "
                   f"{cache_stats['cache_size']:,}/{cache_stats['max_cache_size']:,} entries, "
                   f"{cache_stats['hit_rate']} hit rate")
+            print(f"  Deduplication: {cache_stats['puts_already_exists']:,} nodes already existed")
 
             # Print size distributions
             print()
@@ -345,71 +346,194 @@ def import_directory(dir_path, pattern=0.0001, seed=42, batch_size=1000, store_s
     return results
 
 
+def dump_keys(store_spec, prefix, cache_size=None, reconstruct_rows=False):
+    """
+    Dump all keys with a given prefix from the store.
+
+    Args:
+        store_spec: Store specification
+        prefix: Key prefix to filter (e.g., '/d/buses', '/s/')
+        cache_size: Cache size for cached stores
+        reconstruct_rows: If True, reconstruct row dicts from schema for /d/ keys
+    """
+    print(f"Opening store: {store_spec}")
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    # Count all nodes in store
+    node_count = store.count_nodes()
+    print(f"Store contains {node_count:,} total nodes")
+
+    if node_count == 0:
+        print("Store is empty")
+        return
+
+    # Scan all nodes in the store directly to find keys
+    print(f"Scanning for keys with prefix: {prefix}")
+
+    # For FileSystemStore or CachedFSStore, we need to scan the filesystem
+    if isinstance(store, CachedFSStore):
+        base_path = store.fs_store.base_path
+    else:
+        base_path = store.base_path if hasattr(store, 'base_path') else None
+
+    if not base_path:
+        print("Error: Can only dump from filesystem-based stores")
+        return
+
+    # Scan all nodes to find data keys
+    all_keys = []
+    for subdir in os.listdir(base_path):
+        subdir_path = os.path.join(base_path, subdir)
+        if os.path.isdir(subdir_path):
+            for filename in os.listdir(subdir_path):
+                node_hash = filename
+                node = store.get_node(node_hash)
+                if node and node.is_leaf:
+                    # Leaf nodes contain the actual key-value pairs
+                    for i, key in enumerate(node.keys):
+                        if key.startswith(prefix):
+                            all_keys.append((key, node.values[i]))
+
+    all_keys.sort(key=lambda x: x[0])
+    print(f"Found {len(all_keys):,} keys matching prefix\n")
+
+    # If reconstructing rows, we need to load schemas first
+    schemas = {}
+    if reconstruct_rows and prefix.startswith('/d/'):
+        # Scan for schema keys
+        for subdir in os.listdir(base_path):
+            subdir_path = os.path.join(base_path, subdir)
+            if os.path.isdir(subdir_path):
+                for filename in os.listdir(subdir_path):
+                    node = store.get_node(filename)
+                    if node and node.is_leaf:
+                        for i, key in enumerate(node.keys):
+                            if key.startswith('/s/'):
+                                table_name = key[3:]  # Remove '/s/' prefix
+                                schemas[table_name] = json.loads(node.values[i])
+
+    # Display results
+    for key, value in all_keys[:100]:  # Limit to first 100 for display
+        if reconstruct_rows and key.startswith('/d/'):
+            # Extract table name from key
+            parts = key.split('/')
+            table_name = parts[2] if len(parts) > 2 else None
+
+            if table_name and table_name in schemas:
+                schema = schemas[table_name]
+                row_values = json.loads(value)
+                row_dict = dict(zip(schema['columns'], row_values))
+                print(f"{key} => {json.dumps(row_dict, separators=(',', ':'))}")
+            else:
+                print(f"{key} => {value}")
+        else:
+            print(f"{key} => {value}")
+
+    if len(all_keys) > 100:
+        print(f"\n... and {len(all_keys) - 100:,} more keys")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description='Import SQLite database into ProllyTree',
+        description='ProllyTree SQLite Importer and Dumper',
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+
+    # Import subcommand
+    import_parser = subparsers.add_parser('import', help='Import SQLite database(s) into ProllyTree',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
   # Import single database to memory
-  python sqlite_import.py database.sqlite
+  python sqlite_import.py import database.sqlite
 
   # Import single database to filesystem
-  python sqlite_import.py database.sqlite --store file:///tmp/prolly_data
+  python sqlite_import.py import database.sqlite --store file:///tmp/prolly_data
 
   # Import directory of databases with shared cached store
-  python sqlite_import.py /path/to/db/directory --store cached-file:///tmp/shared_store --cache-size 1000
+  python sqlite_import.py import /path/to/db/directory --store cached-file:///tmp/shared_store --cache-size 1000
 
-  # Import directory with verbose batch output
-  python sqlite_import.py /path/to/db/directory --directory --verbose-batches
+  # Import specific tables only
+  python sqlite_import.py import database.sqlite --tables buses generators --store file:///tmp/prolly_data
+        ''')
 
-  # Import with custom pattern and seed
-  python sqlite_import.py database.sqlite --pattern 0.0001 --seed 42
-        '''
-    )
-
-    parser.add_argument('path', help='Path to SQLite database file or directory containing SQLite files')
-    parser.add_argument('--pattern', type=float, default=0.0001,
+    import_parser.add_argument('path', help='Path to SQLite database file or directory')
+    import_parser.add_argument('--pattern', type=float, default=0.0001,
                         help='Split pattern (default: 0.0001)')
-    parser.add_argument('--seed', type=int, default=42,
+    import_parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for rolling hash (default: 42)')
-    parser.add_argument('--store', default=':memory:',
-                        help='Store spec: :memory:, file:///path, cached-file:///path, or s3://bucket (default: :memory:)')
-    parser.add_argument('--batch-size', type=int, default=1000,
+    import_parser.add_argument('--store', default=':memory:',
+                        help='Store spec: :memory:, file:///path, cached-file:///path (default: :memory:)')
+    import_parser.add_argument('--batch-size', type=int, default=1000,
                         help='Batch size for inserts (default: 1000)')
-    parser.add_argument('--cache-size', type=int, default=None,
+    import_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores (default: 1000)')
-    parser.add_argument('--verbose-batches', action='store_true',
+    import_parser.add_argument('--verbose-batches', action='store_true',
                         help='Show detailed statistics for every batch insert')
-    parser.add_argument('--directory', action='store_true',
+    import_parser.add_argument('--directory', action='store_true',
                         help='Import all SQLite files from a directory using a shared store')
-    parser.add_argument('--tables', nargs='+', default=None,
-                        help='Specific table names to import (default: import all tables)')
+    import_parser.add_argument('--tables', nargs='+', default=None,
+                        help='Specific table names to import (default: all)')
+
+    # Dump subcommand
+    dump_parser = subparsers.add_parser('dump', help='Dump keys from ProllyTree store',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Dump all data keys for buses table
+  python sqlite_import.py dump /d/buses --store file:///tmp/prolly_data
+
+  # Dump all schemas
+  python sqlite_import.py dump /s/ --store file:///tmp/prolly_data
+
+  # Dump and reconstruct row objects
+  python sqlite_import.py dump /d/buses --store file:///tmp/prolly_data --reconstruct
+        ''')
+
+    dump_parser.add_argument('prefix', help='Key prefix to dump (e.g., /d/buses, /s/)')
+    dump_parser.add_argument('--store', required=True,
+                        help='Store spec: file:///path, cached-file:///path')
+    dump_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+    dump_parser.add_argument('--reconstruct', action='store_true',
+                        help='Reconstruct row objects from schema (for /d/ keys)')
 
     args = parser.parse_args()
 
-    # Check if path is a directory or a file
-    if args.directory or os.path.isdir(args.path):
-        # Directory import with shared store
-        results = import_directory(
-            args.path,
-            pattern=args.pattern,
-            seed=args.seed,
-            batch_size=args.batch_size,
+    if args.command == 'import':
+        # Check if path is a directory or a file
+        if args.directory or os.path.isdir(args.path):
+            # Directory import with shared store
+            results = import_directory(
+                args.path,
+                pattern=args.pattern,
+                seed=args.seed,
+                batch_size=args.batch_size,
+                store_spec=args.store,
+                cache_size=args.cache_size,
+                verbose_batches=args.verbose_batches,
+                tables_filter=args.tables
+            )
+        else:
+            # Single file import
+            tree = import_sqlite(
+                args.path,
+                pattern=args.pattern,
+                seed=args.seed,
+                batch_size=args.batch_size,
+                store_spec=args.store,
+                cache_size=args.cache_size,
+                verbose_batches=args.verbose_batches,
+                tables_filter=args.tables
+            )
+    elif args.command == 'dump':
+        dump_keys(
             store_spec=args.store,
+            prefix=args.prefix,
             cache_size=args.cache_size,
-            verbose_batches=args.verbose_batches,
-            tables_filter=args.tables
+            reconstruct_rows=args.reconstruct
         )
     else:
-        # Single file import
-        tree = import_sqlite(
-            args.path,
-            pattern=args.pattern,
-            seed=args.seed,
-            batch_size=args.batch_size,
-            store_spec=args.store,
-            cache_size=args.cache_size,
-            verbose_batches=args.verbose_batches,
-            tables_filter=args.tables
-        )
+        parser.print_help()
