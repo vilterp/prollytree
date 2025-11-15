@@ -146,10 +146,11 @@ class ProllyTree:
         """Retrieve node by hash"""
         return self.store.get_node(node_hash)
 
-    def insert_batch(self, mutations, verbose=True):
+    def insert_batch(self, mutations, verbose=True, validate=False):
         """
         Incrementally insert a batch of (key, value) pairs.
         mutations: sorted list of (key, value) tuples
+        validate: if True, validate tree is sorted after insertion
         Returns: dict with operation stats
         """
         # Reset stats for this batch
@@ -172,6 +173,12 @@ class ProllyTree:
             self._store_node(new_root)
 
         self.root = new_root
+
+        # Validate if requested
+        if validate:
+            is_valid, error_msg, position, prev_key, current_key = self.validate_sorted()
+            if not is_valid:
+                raise ValueError(f"Tree validation failed after batch insert: {error_msg} - {prev_key} > {current_key}")
 
         stats = self._summarize_ops()
 
@@ -604,3 +611,36 @@ class ProllyTree:
     def verify(self):
         """Verify tree structure and return all key-value pairs in order (for backwards compatibility)"""
         return list(self.items())
+
+    def validate_sorted(self):
+        """
+        Validate that all keys in the tree are in sorted order with no duplicates.
+
+        Returns:
+            Tuple of (is_valid, error_message, position, prev_key, current_key)
+            If valid: (True, None, None, None, None)
+            If invalid: (False, error_msg, position, prev_key, current_key)
+        """
+        from cursor import TreeCursor
+
+        root_hash = self._hash_node(self.root)
+        cursor = TreeCursor(self.store, root_hash)
+
+        prev_key = None
+        position = 0
+
+        entry = cursor.next()
+        while entry:
+            position += 1
+            key = entry[0]
+
+            if prev_key is not None:
+                if key == prev_key:
+                    return (False, f"Duplicate key at position {position}", position, prev_key, key)
+                elif key < prev_key:
+                    return (False, f"Keys out of order at position {position}", position, prev_key, key)
+
+            prev_key = key
+            entry = cursor.next()
+
+        return (True, None, None, None, None)
