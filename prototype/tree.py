@@ -515,11 +515,17 @@ class ProllyTree:
         if node.is_leaf:
             # Yield matching leaf entries
             for key, value in zip(node.keys, node.values):
-                if key.startswith(prefix):
-                    yield (key, value)
-                elif key > prefix + '\xff':  # Past the end of prefix range
-                    # We've gone past the prefix range
-                    return
+                # Handle both string and non-string keys
+                if isinstance(key, str):
+                    if key.startswith(prefix):
+                        yield (key, value)
+                    elif prefix and key > prefix + '\xff':  # Past the end of prefix range
+                        # We've gone past the prefix range
+                        return
+                else:
+                    # For non-string keys, only yield if prefix is empty
+                    if not prefix:
+                        yield (key, value)
         else:
             # For internal nodes, traverse children
             for i, child_hash in enumerate(node.values):
@@ -528,15 +534,15 @@ class ProllyTree:
                 # where lower_bound = node.keys[i-1] (or -inf for i=0)
                 # and upper_bound = node.keys[i] (or +inf for last child)
 
-                lower_bound = node.keys[i-1] if i > 0 else ""
+                lower_bound = node.keys[i-1] if i > 0 else (""  if isinstance(prefix, str) else None)
                 upper_bound = node.keys[i] if i < len(node.keys) else None
 
-                # Skip if this child is entirely before the prefix
-                if upper_bound is not None and upper_bound <= prefix:
+                # Skip if this child is entirely before the prefix (only for string keys)
+                if prefix and isinstance(upper_bound, str) and upper_bound <= prefix:
                     continue
 
-                # Skip if this child is entirely after the prefix range
-                if lower_bound > prefix + '\xff':
+                # Skip if this child is entirely after the prefix range (only for string keys)
+                if prefix and isinstance(lower_bound, str) and lower_bound > prefix + '\xff':
                     break
 
                 # This child might contain matching keys
