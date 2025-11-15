@@ -317,7 +317,8 @@ def dump_database(store_spec: str, prefix: str, root_hash: Optional[str] = None,
 def diff_trees(old_hash: str, new_hash: str,
                 store_spec: str = 'cached-file://.prolly',
                 cache_size: Optional[int] = None,
-                limit: Optional[int] = None):
+                limit: Optional[int] = None,
+                prefix: Optional[str] = None):
     """
     Diff two trees by their root hashes.
 
@@ -327,6 +328,7 @@ def diff_trees(old_hash: str, new_hash: str,
         store_spec: Store specification
         cache_size: Cache size for cached stores
         limit: Maximum number of diff events to display (None for all)
+        prefix: Optional key prefix to filter diff results
     """
     print("="*80)
     print("DIFF: Comparing two trees by hash")
@@ -334,6 +336,8 @@ def diff_trees(old_hash: str, new_hash: str,
     print(f"Old hash: {old_hash}")
     print(f"New hash: {new_hash}")
     print(f"Store:    {store_spec}")
+    if prefix:
+        print(f"Prefix:   {prefix}")
 
     if old_hash == new_hash:
         print("\nTrees are identical (same root hash)")
@@ -352,7 +356,7 @@ def diff_trees(old_hash: str, new_hash: str,
     deleted_count = 0
     modified_count = 0
 
-    for event in differ.diff(old_hash, new_hash):
+    for event in differ.diff(old_hash, new_hash, prefix=prefix):
         event_count += 1
 
         if limit is None or event_count <= limit:
@@ -360,7 +364,7 @@ def diff_trees(old_hash: str, new_hash: str,
                 print(f"+ {event.key} = {event.value}")
                 added_count += 1
             elif isinstance(event, Deleted):
-                print(f"- {event.key}")
+                print(f"- {event.key} = {event.old_value}")
                 deleted_count += 1
             elif isinstance(event, Modified):
                 print(f"M {event.key}: {event.old_value} -> {event.new_value}")

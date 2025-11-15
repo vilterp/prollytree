@@ -36,9 +36,10 @@ class Added:
 class Deleted:
     """A key was deleted."""
     key: Any
+    old_value: Any
 
     def __repr__(self):
-        return f"Deleted({self.key!r})"
+        return f"Deleted({self.key!r}, {self.old_value!r})"
 
 
 @dataclass(frozen=True)
@@ -80,19 +81,21 @@ class Differ:
         self.store = store
         self.stats = DiffStats()
 
-    def diff(self, old_hash: str, new_hash: str) -> Iterator[DiffEvent]:
+    def diff(self, old_hash: str, new_hash: str, prefix: str = None) -> Iterator[DiffEvent]:
         """
         Compute differences between two trees.
 
         Args:
             old_hash: Root hash of the old tree
             new_hash: Root hash of the new tree
+            prefix: Optional key prefix to filter diff results
 
         Yields:
             DiffEvent objects (Added, Deleted, or Modified) in key order
         """
         # Reset stats for new diff operation
         self.stats = DiffStats()
+        self.prefix = prefix
 
         # If hashes are the same, trees are identical - no diff needed
         if old_hash == new_hash:
@@ -118,6 +121,14 @@ class Differ:
     def get_stats(self) -> DiffStats:
         """Get statistics from the most recent diff operation."""
         return self.stats
+
+    def _matches_prefix(self, key: Any) -> bool:
+        """Check if a key matches the prefix filter."""
+        if self.prefix is None:
+            return True
+        # Convert key to string for comparison
+        key_str = str(key)
+        return key_str.startswith(self.prefix)
 
     def _diff_nodes(self, old_node, new_node) -> Iterator[DiffEvent]:
         """
@@ -169,6 +180,10 @@ class Differ:
         all_keys = sorted(set(old_entries.keys()) | set(new_entries.keys()))
 
         for key in all_keys:
+            # Skip keys that don't match prefix
+            if not self._matches_prefix(key):
+                continue
+
             old_has = key in old_entries
             new_has = key in new_entries
 
@@ -181,7 +196,7 @@ class Differ:
                 yield Added(key, new_entries[key])
             else:
                 # Only in old
-                yield Deleted(key)
+                yield Deleted(key, old_entries[key])
 
     def _diff_internal_nodes(self, old_node, new_node) -> Iterator[DiffEvent]:
         """
@@ -281,6 +296,10 @@ class Differ:
         # Compare
         all_keys = sorted(set(old_entries.keys()) | set(new_entries.keys()))
         for key in all_keys:
+            # Skip keys that don't match prefix
+            if not self._matches_prefix(key):
+                continue
+
             old_has = key in old_entries
             new_has = key in new_entries
 
@@ -290,7 +309,7 @@ class Differ:
             elif new_has:
                 yield Added(key, new_entries[key])
             else:
-                yield Deleted(key)
+                yield Deleted(key, old_entries[key])
 
     def _diff_internal_vs_leaf(self, old_node, new_entries: dict) -> Iterator[DiffEvent]:
         """
@@ -311,6 +330,10 @@ class Differ:
         # Compare
         all_keys = sorted(set(old_entries.keys()) | set(new_entries.keys()))
         for key in all_keys:
+            # Skip keys that don't match prefix
+            if not self._matches_prefix(key):
+                continue
+
             old_has = key in old_entries
             new_has = key in new_entries
 
@@ -320,7 +343,7 @@ class Differ:
             elif new_has:
                 yield Added(key, new_entries[key])
             else:
-                yield Deleted(key)
+                yield Deleted(key, old_entries[key])
 
     def _collect_all_entries(self, node) -> Iterator[tuple]:
         """
@@ -351,7 +374,8 @@ class Differ:
             Added events for all entries
         """
         for key, value in self._collect_all_entries(node):
-            yield Added(key, value)
+            if self._matches_prefix(key):
+                yield Added(key, value)
 
     def _yield_all_deletions(self, node) -> Iterator[Deleted]:
         """
@@ -363,12 +387,13 @@ class Differ:
         Yields:
             Deleted events for all entries
         """
-        for key, _ in self._collect_all_entries(node):
-            yield Deleted(key)
+        for key, value in self._collect_all_entries(node):
+            if self._matches_prefix(key):
+                yield Deleted(key, value)
 
 
 # Backward compatibility function
-def diff(store: Store, old_hash: str, new_hash: str) -> Iterator[DiffEvent]:
+def diff(store: Store, old_hash: str, new_hash: str, prefix: str = None) -> Iterator[DiffEvent]:
     """
     Compute differences between two trees (backward compatibility wrapper).
 
@@ -376,9 +401,10 @@ def diff(store: Store, old_hash: str, new_hash: str) -> Iterator[DiffEvent]:
         store: Storage backend containing both trees
         old_hash: Root hash of the old tree
         new_hash: Root hash of the new tree
+        prefix: Optional key prefix to filter diff results
 
     Yields:
         DiffEvent objects (Added, Deleted, or Modified) in key order
     """
     differ = Differ(store)
-    yield from differ.diff(old_hash, new_hash)
+    yield from differ.diff(old_hash, new_hash, prefix=prefix)

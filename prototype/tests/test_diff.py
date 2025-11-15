@@ -297,11 +297,11 @@ def test_diff_events_are_ordered(store):
 def test_diff_event_repr():
     """Test string representation of diff events."""
     added = Added(1, "a")
-    deleted = Deleted(2)
+    deleted = Deleted(2, "b")
     modified = Modified(3, "old", "new")
 
     assert repr(added) == "Added(1, 'a')"
-    assert repr(deleted) == "Deleted(2)"
+    assert repr(deleted) == "Deleted(2, 'b')"
     assert repr(modified) == "Modified(3, 'old' -> 'new')"
 
 
