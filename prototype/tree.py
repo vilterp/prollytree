@@ -88,7 +88,7 @@ class ProllyTree:
 
     def _rolling_hash(self, current_hash, data):
         """
-        Fast rolling hash using Python's builtin hash function.
+        Deterministic rolling hash using hashlib (SHA256).
         Updates the hash with new data.
 
         Args:
@@ -98,8 +98,12 @@ class ProllyTree:
         Returns:
             Updated hash value (uint32)
         """
-        # Use Python's fast builtin hash combined with current state
-        return (current_hash ^ hash(data)) & 0xFFFFFFFF
+        # Use SHA256 for deterministic hashing - fast C implementation
+        # Combine current hash with new data
+        combined = current_hash.to_bytes(4, byteorder='big') + data
+        hash_bytes = hashlib.sha256(combined).digest()
+        # Take first 4 bytes and convert to uint32
+        return int.from_bytes(hash_bytes[:4], byteorder='big')
 
     def _hash_node(self, node):
         """
