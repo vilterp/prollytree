@@ -261,38 +261,68 @@ class ProllyTree:
                 return self._build_internal_from_children(new_leaves, verbose)
 
         else:
-            # Internal node: collect all entries and merge with mutations
-            # This is simpler and more correct than trying to partition mutations
+            # Internal node: partition mutations to children and rebuild recursively
             if verbose:
-                print(f"  -> Internal node, collecting all entries to merge with {len(mutations)} mutations")
+                print(f"  -> Internal node, partitioning {len(mutations)} mutations to children")
 
-            # Collect all existing entries from this subtree
-            old_items = []
-            for key, value in self._items_from_node(node, ""):
-                old_items.append((key, value))
+            # Recursively rebuild children that have mutations
+            new_children = []
+            mut_idx = 0
+
+            for i, child_hash in enumerate(node.values):
+                # Find mutations for this child
+                # For child i, mutations go to it if:
+                # - i == 0: key < separator[0]
+                # - 0 < i < len(node.keys): separator[i-1] <= key < separator[i]
+                # - i == len(node.keys): key >= separator[-1]
+                child_mutations = []
+
+                while mut_idx < len(mutations):
+                    key = mutations[mut_idx][0]
+
+                    # Determine if this mutation belongs to this child
+                    if i == 0:
+                        # First child: all keys < first separator
+                        if len(node.keys) == 0 or key < node.keys[0]:
+                            child_mutations.append(mutations[mut_idx])
+                            mut_idx += 1
+                        else:
+                            break
+                    elif i < len(node.keys):
+                        # Middle child: separator[i-1] <= key < separator[i]
+                        if key < node.keys[i]:
+                            child_mutations.append(mutations[mut_idx])
+                            mut_idx += 1
+                        else:
+                            break
+                    else:
+                        # Last child: all remaining keys
+                        child_mutations.append(mutations[mut_idx])
+                        mut_idx += 1
+
+                # Rebuild child (or reuse if no mutations)
+                child_node = self._get_node(child_hash)
+                new_child = self._rebuild_with_mutations(child_node, child_mutations, verbose)
+
+                # The rebuild might return multiple nodes (if split), or a single node
+                if isinstance(new_child, list):
+                    new_children.extend(new_child)
+                else:
+                    new_children.append(new_child)
 
             if verbose:
-                print(f"  -> Collected {len(old_items)} existing entries")
+                print(f"  -> Rebuilt {len(new_children)} children from {len(node.values)} original children")
 
-            # Merge with mutations
-            merged = self._merge_sorted(old_items, mutations)
-
-            if verbose:
-                print(f"  -> Merged to {len(merged)} total entries")
-
-            # Rebuild from scratch
-            new_leaves = self._build_leaves(merged)
-
-            if verbose:
-                print(f"  -> Built {len(new_leaves)} leaf nodes")
-
-            if len(new_leaves) == 1:
-                return new_leaves[0]
+            # Now rebuild internal structure from new children
+            if len(new_children) == 1:
+                # Single child - unwrap it
+                return new_children[0]
             else:
-                node = self._build_internal_from_children(new_leaves, verbose)
+                # Build new internal node(s) from children
+                new_node = self._build_internal_from_children(new_children, verbose)
                 if self.validate:
-                    node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
-                return node
+                    new_node.validate(self.store, context="_rebuild_with_mutations (internal node rebuild)")
+                return new_node
 
     def _build_internal_from_children(self, children, verbose=False) -> Node | None:
         """

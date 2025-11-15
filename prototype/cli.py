@@ -277,6 +277,80 @@ def commonality_analysis(left_hash: str, right_hash: str, store_spec: str = 'cac
     print_commonality_report(left_hash, right_hash, stats)
 
 
+def get_key(root_hash: str, key: str, store_spec: str = 'cached-file://.prolly',
+            cache_size: Optional[int] = None):
+    """
+    Get a value by key from a tree.
+
+    Args:
+        root_hash: Root hash of tree to search
+        key: Key to look up
+        store_spec: Store specification
+        cache_size: Cache size for cached stores
+    """
+    from tree import ProllyTree
+
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    # Load tree with this root
+    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
+    root_node = store.get_node(root_hash)
+    if root_node is None:
+        print(f"Error: Root hash {root_hash} not found in store")
+        return
+
+    tree.root = root_node
+
+    # Search for the key
+    for k, v in tree.items(key):
+        if k == key:
+            print(v)
+            return
+
+    print(f"Key '{key}' not found")
+
+
+def set_key(root_hash: str, key: str, value: str, store_spec: str = 'cached-file://.prolly',
+            cache_size: Optional[int] = None):
+    """
+    Set a key-value pair in a tree, creating a new root.
+
+    Args:
+        root_hash: Root hash of tree to modify
+        key: Key to set
+        value: Value to set
+        store_spec: Store specification
+        cache_size: Cache size for cached stores
+    """
+    from tree import ProllyTree
+
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    # Load tree with this root
+    tree = ProllyTree(pattern=0.0001, seed=42, store=store)
+    root_node = store.get_node(root_hash)
+    if root_node is None:
+        print(f"Error: Root hash {root_hash} not found in store")
+        return
+
+    tree.root = root_node
+
+    # Insert the key-value pair
+    tree.insert_batch([(key, value)], verbose=False)
+
+    # Get new root hash
+    new_root_hash = tree._hash_node(tree.root)
+
+    print(f"{'='*80}")
+    print(f"SET COMPLETE")
+    print(f"{'='*80}")
+    print(f"Old root: {root_hash}")
+    print(f"New root: {new_root_hash}")
+    print(f"Key:      {key}")
+    print(f"Value:    {value}")
+    print(f"{'='*80}")
+
+
 def main():
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -416,12 +490,47 @@ Examples:
 Examples:
   # Compare two trees
   python cli.py commonality 1395402e5fd71b2d 3005a56aaed3813a --store cached-file://.prolly
+
+Note: This shows structural node sharing. Trees created by incrementally modifying
+one another will share most nodes (e.g., 94%% for a single key change). Trees built
+independently from the same data may have 0%% commonality due to different structure.
         ''')
     commonality_parser.add_argument('left_hash', help='Root hash of left tree')
     commonality_parser.add_argument('right_hash', help='Root hash of right tree')
     commonality_parser.add_argument('--store', default='cached-file://.prolly',
                         help='Store spec (default: cached-file://.prolly)')
     commonality_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+
+    # Get subcommand
+    get_parser = subparsers.add_parser('get', help='Get a value by key',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Get a key from a tree
+  python cli.py get 1395402e5fd71b2d /d/buses/100001 --store cached-file://.prolly
+        ''')
+    get_parser.add_argument('root_hash', help='Root hash of tree')
+    get_parser.add_argument('key', help='Key to retrieve')
+    get_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
+    get_parser.add_argument('--cache-size', type=int, default=None,
+                        help='Cache size for cached stores')
+
+    # Set subcommand
+    set_parser = subparsers.add_parser('set', help='Set a key-value pair (creates new root)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Set a key in a tree
+  python cli.py set 1395402e5fd71b2d mykey myvalue --store cached-file://.prolly
+        ''')
+    set_parser.add_argument('root_hash', help='Root hash of tree to modify')
+    set_parser.add_argument('key', help='Key to set')
+    set_parser.add_argument('value', help='Value to set')
+    set_parser.add_argument('--store', default='cached-file://.prolly',
+                        help='Store spec (default: cached-file://.prolly)')
+    set_parser.add_argument('--cache-size', type=int, default=None,
                         help='Cache size for cached stores')
 
     args = parser.parse_args()
@@ -469,6 +578,21 @@ Examples:
         commonality_analysis(
             left_hash=args.left_hash,
             right_hash=args.right_hash,
+            store_spec=args.store,
+            cache_size=args.cache_size
+        )
+    elif args.command == 'get':
+        get_key(
+            root_hash=args.root_hash,
+            key=args.key,
+            store_spec=args.store,
+            cache_size=args.cache_size
+        )
+    elif args.command == 'set':
+        set_key(
+            root_hash=args.root_hash,
+            key=args.key,
+            value=args.value,
             store_spec=args.store,
             cache_size=args.cache_size
         )
