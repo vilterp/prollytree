@@ -438,18 +438,34 @@ class ProllyTree:
 
         return leaves if leaves else [Node(is_leaf=True)]
 
-    def _print_tree(self, label=""):
-        """Print tree structure for debugging"""
+    def _print_tree(self, label="", verbose=False):
+        """
+        Print tree structure for debugging.
+        
+        Args:
+            label: Label to display with the tree
+            verbose: If True, print all leaf node values. If False, only show first/last keys and count.
+        """
         print(f"\n{'='*60}")
         print(f"TREE {label}:")
         print(f"{'='*60}")
         # For the root, we don't have a hash readily available
         # We'd need to compute it or track it separately
         root_hash = self._hash_node(self.root)
-        self._print_node(self.root, root_hash, prefix="", is_last=True)
+        self._print_node(self.root, root_hash, prefix="", is_last=True, verbose=verbose)
 
-    def _print_node(self, node, node_hash, prefix="", is_last=True, reused_hashes=None):
-        """Recursively print node and its children"""
+    def _print_node(self, node, node_hash, prefix="", is_last=True, reused_hashes=None, verbose=False):
+        """
+        Recursively print node and its children.
+        
+        Args:
+            node: Node to print
+            node_hash: Hash of the node
+            prefix: Prefix for tree formatting
+            is_last: Whether this is the last child
+            reused_hashes: Set of reused hashes to mark
+            verbose: If True, print all leaf node values. If False, only show first/last keys and count.
+        """
         branch = "└── " if is_last else "├── "
 
         # Check if this node was reused
@@ -458,9 +474,22 @@ class ProllyTree:
             reused_flag = " <- REUSED!"
 
         if node.is_leaf:
-            data = list(zip(node.keys, node.values))
             hash_str = f"#{node_hash}" if node_hash is not None else "#root"
-            print(f"{prefix}{branch}LEAF {hash_str}: {data}{reused_flag}")
+            if verbose:
+                # Show all key-value pairs
+                data = list(zip(node.keys, node.values))
+                print(f"{prefix}{branch}LEAF {hash_str}: {data}{reused_flag}")
+            else:
+                # Show only first and last keys, and the count
+                count = len(node.keys)
+                if count == 0:
+                    print(f"{prefix}{branch}LEAF {hash_str}: (empty){reused_flag}")
+                elif count == 1:
+                    print(f"{prefix}{branch}LEAF {hash_str}: [{node.keys[0]}] (1 key){reused_flag}")
+                else:
+                    first_key = node.keys[0]
+                    last_key = node.keys[-1]
+                    print(f"{prefix}{branch}LEAF {hash_str}: [{first_key} ... {last_key}] ({count} keys){reused_flag}")
         else:
             hash_str = f"#{node_hash}" if node_hash is not None else "#root"
             print(f"{prefix}{branch}INTERNAL {hash_str}: keys={node.keys}{reused_flag}")
@@ -470,7 +499,7 @@ class ProllyTree:
             for i, child_hash in enumerate(node.values):
                 child = self._get_node(child_hash)
                 child_is_last = (i == len(node.values) - 1)
-                self._print_node(child, child_hash, prefix + extension, child_is_last, reused_hashes)
+                self._print_node(child, child_hash, prefix + extension, child_is_last, reused_hashes, verbose)
 
     def _print_ops(self):
         """Print operation statistics"""

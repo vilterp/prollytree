@@ -406,7 +406,8 @@ def diff_trees(old_hash: str, new_hash: str,
 
 def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.prolly',
                         cache_size: Optional[int] = None,
-                        prefix: Optional[str] = None):
+                        prefix: Optional[str] = None,
+                        verbose: bool = False):
     """
     Print the tree structure for a given root hash.
 
@@ -415,6 +416,7 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
         store_spec: Store specification
         cache_size: Cache size for cached stores
         prefix: Optional key prefix to filter tree visualization
+        verbose: If True, show all leaf node values. If False, only show first/last keys and count.
     """
     from tree import ProllyTree
 
@@ -425,6 +427,8 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
     print(f"Store:     {store_spec}")
     if prefix:
         print(f"Prefix:    {prefix}")
+    if not verbose:
+        print(f"Mode:      compact (use --verbose to show all leaf values)")
 
     store = create_store_from_spec(store_spec, cache_size=cache_size)
 
@@ -444,7 +448,7 @@ def print_tree_structure(root_hash: str, store_spec: str = 'cached-file://.proll
         label += f", filtering by prefix='{prefix}'"
         print(f"\nNote: Full tree structure shown. Use 'dump' command to see filtered data.")
 
-    tree._print_tree(label=label)
+    tree._print_tree(label=label, verbose=verbose)
 
 
 def main():
@@ -548,8 +552,11 @@ Examples:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Print tree structure
+  # Print tree structure (compact mode)
   python cli.py print-tree a16b213fc2e7d598
+
+  # Print tree with all leaf values
+  python cli.py print-tree a16b213fc2e7d598 --verbose
 
   # Print tree with custom store
   python cli.py print-tree a16b213fc2e7d598 --store cached-file:///tmp/data
@@ -565,6 +572,8 @@ Examples:
                         help='Cache size for cached stores')
     print_tree_parser.add_argument('--prefix', type=str, default=None,
                         help='Key prefix label for the visualization')
+    print_tree_parser.add_argument('--verbose', action='store_true',
+                        help='Show all leaf node values (default: only show first/last keys and count)')
 
     args = parser.parse_args()
 
@@ -602,7 +611,8 @@ Examples:
             root_hash=args.root_hash,
             store_spec=args.store,
             cache_size=args.cache_size,
-            prefix=args.prefix
+            prefix=args.prefix,
+            verbose=args.verbose
         )
     else:
         parser.print_help()
