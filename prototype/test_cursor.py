@@ -51,11 +51,10 @@ def test_cursor_iterates_all_keys(sample_tree):
 
 
 def test_cursor_seek_to_middle(sample_tree):
-    """Test seeking to a key in the middle (currently disabled)."""
+    """Test seeking to a key in the middle."""
     store, root_hash, expected_data = sample_tree
 
-    # Note: seeking is currently disabled due to separator invariant issues
-    # Cursor will start from beginning regardless of seek_to parameter
+    # Seek to key0050
     cursor = TreeCursor(store, root_hash, seek_to='key0050')
     results = []
 
@@ -64,9 +63,9 @@ def test_cursor_seek_to_middle(sample_tree):
         results.append(entry)
         entry = cursor.next()
 
-    # Gets all keys since seeking is disabled
-    assert len(results) == 100
-    assert results[0][0] == 'key0000'
+    # Should get key0050 through key0099 (50 keys)
+    assert len(results) == 50
+    assert results[0][0] == 'key0050'
     assert results[-1][0] == 'key0099'
 
 
@@ -89,20 +88,18 @@ def test_cursor_seek_to_beginning(sample_tree):
 
 
 def test_cursor_seek_to_end(sample_tree):
-    """Test seeking past all keys (currently disabled)."""
+    """Test seeking past all keys."""
     store, root_hash, expected_data = sample_tree
 
-    # Note: seeking is currently disabled
-    # Cursor will start from beginning regardless of seek_to parameter
+    # Seek to a key past all existing keys
     cursor = TreeCursor(store, root_hash, seek_to='key9999')
 
     entry = cursor.next()
-    # Gets first key since seeking is disabled
-    assert entry == ('key0000', 'value0')
+    assert entry is None
 
 
 def test_cursor_seek_with_prefix():
-    """Test seeking to a prefix (currently disabled)."""
+    """Test seeking to a prefix."""
     store = MemoryStore()
     tree = ProllyTree(pattern=0.0001, seed=42, store=store)
 
@@ -115,13 +112,16 @@ def test_cursor_seek_with_prefix():
     tree.insert_batch(data, verbose=False)
     root_hash = tree._hash_node(tree.root)
 
-    # Note: seeking is currently disabled
-    # We can still filter by prefix using the tree.items() method
+    # Seek to 'banana' prefix
+    cursor = TreeCursor(store, root_hash, seek_to='banana')
     results = []
-    for key, value in tree.items('banana'):
-        results.append((key, value))
 
-    # Should get all banana keys via items() filtering
+    entry = cursor.next()
+    while entry and entry[0].startswith('banana'):
+        results.append(entry)
+        entry = cursor.next()
+
+    # Should get all banana keys
     assert len(results) == 10
     assert all(k.startswith('banana') for k, v in results)
 

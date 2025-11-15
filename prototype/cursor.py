@@ -46,14 +46,19 @@ class TreeCursor:
         self.stack = []
         # Current key-value pair (None until first next() call)
         self.current = None
-        # Initialize by descending to first leaf
-        # Note: seek_to is currently ignored due to separator issues in existing trees
-        # TODO: Re-enable seeking once separator invariants are guaranteed
-        self._descend_to_first(root_hash)
+        # Initialize by descending to first leaf or seeking to prefix
+        if seek_to:
+            self._seek(root_hash, seek_to)
+        else:
+            self._descend_to_first(root_hash)
 
     def _seek(self, node_hash: str, target: str):
         """
         Seek to the first key >= target in O(log n) time.
+
+        Uses separator invariants documented in Node class:
+        - separator keys[i] is the first key in child values[i+1]
+        - child values[i] contains keys in range based on separators
 
         Args:
             node_hash: Starting node hash
@@ -61,25 +66,17 @@ class TreeCursor:
         """
         node = self.store.get_node(node_hash)
         if node is None:
-            print(f"DEBUG: Root node is None")
             return
 
-        depth = 0
         while not node.is_leaf:
-            # Internal node: binary search for the right child
-            # Find the first child whose range could contain target
+            # Internal node: find which child should contain target
+            # Using separator semantics: keys[i] = first key in values[i+1]
             child_idx = 0
             for i, separator in enumerate(node.keys):
                 if target >= separator:
                     child_idx = i + 1
                 else:
                     break
-
-            print(f"DEBUG: Depth {depth}, internal node with {len(node.keys)} separators, chose child {child_idx}/{len(node.values)}")
-            if len(node.keys) > 0:
-                print(f"DEBUG:   First separator: {node.keys[0][:50] if isinstance(node.keys[0], str) else node.keys[0]}")
-                if len(node.keys) > 1:
-                    print(f"DEBUG:   Last separator: {node.keys[-1][:50] if isinstance(node.keys[-1], str) else node.keys[-1]}")
 
             # Push this node with the child index
             self.stack.append((node, child_idx))
@@ -89,37 +86,21 @@ class TreeCursor:
                 child_hash = node.values[child_idx]
                 node = self.store.get_node(child_hash)
                 if node is None:
-                    print(f"DEBUG: Child node at index {child_idx} is None")
                     return
-                depth += 1
             else:
-                print(f"DEBUG: child_idx {child_idx} >= len(values) {len(node.values)}, returning")
                 return
 
         # At a leaf node: find first key >= target
-        print(f"DEBUG: At leaf with {len(node.keys)} keys, target='{target}'")
-        if len(node.keys) > 0:
-            print(f"DEBUG:   First key: {node.keys[0][:50] if isinstance(node.keys[0], str) else node.keys[0]}")
-            print(f"DEBUG:   Last key: {node.keys[-1][:50] if isinstance(node.keys[-1], str) else node.keys[-1]}")
-
         idx = 0
         for i, key in enumerate(node.keys):
             if isinstance(key, str) and key >= target:
                 idx = i
-                print(f"DEBUG:   Found match at index {i}: {key[:50]}")
-                # Show a few keys around this one
-                if i > 0:
-                    print(f"DEBUG:     Previous key [{i-1}]: {node.keys[i-1][:50] if isinstance(node.keys[i-1], str) else node.keys[i-1]}")
-                if i < len(node.keys) - 1:
-                    print(f"DEBUG:     Next key [{i+1}]: {node.keys[i+1][:50] if isinstance(node.keys[i+1], str) else node.keys[i+1]}")
                 break
         else:
             # All keys in this leaf are < target
             idx = len(node.keys)
-            print(f"DEBUG:   All keys < target, setting idx to {idx}")
 
         self.stack.append((node, idx))
-        print(f"DEBUG: Final stack depth: {len(self.stack)}")
 
     def _descend_to_first(self, node_hash: str):
         """Descend to the leftmost leaf starting from node_hash."""

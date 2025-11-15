@@ -590,6 +590,8 @@ class ProllyTree:
         Generator that yields (key, value) pairs with keys matching the given prefix.
 
         Uses TreeCursor to iterate through all items and filters by prefix.
+        When a prefix is provided, seeks to the prefix for O(log n) performance
+        (if the tree has valid separator invariants).
 
         Args:
             prefix: Key prefix to filter (default: "" returns all items)
@@ -602,11 +604,14 @@ class ProllyTree:
         # Get root hash
         root_hash = self._hash_node(self.root)
 
-        # Create cursor
+        # Create cursor, seeking to prefix if provided
         cursor = TreeCursor(self.store, root_hash, seek_to=prefix if prefix else None)
         entry = cursor.next()
 
+        # Track whether we've found any matches
+        # This is needed for trees with invalid separator invariants where seek may fail
         found_match = False
+
         while entry:
             key, value = entry
             # Check if key matches prefix
@@ -615,7 +620,8 @@ class ProllyTree:
                     found_match = True
                     yield (key, value)
                 elif prefix and found_match:
-                    # We've passed all matching keys (keys are sorted)
+                    # Key doesn't match prefix and we've seen matches before
+                    # Since keys are sorted, we're past all matches
                     break
             else:
                 # Non-string keys - only yield if no prefix
