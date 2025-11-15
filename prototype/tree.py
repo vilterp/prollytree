@@ -601,18 +601,20 @@ class ProllyTree:
         # Get root hash
         root_hash = self._hash_node(self.root)
 
-        # Create cursor, seeking to prefix if provided
+        # Create cursor
         cursor = TreeCursor(self.store, root_hash, seek_to=prefix if prefix else None)
         entry = cursor.next()
 
+        found_match = False
         while entry:
             key, value = entry
             # Check if key matches prefix
             if isinstance(key, str):
                 if key.startswith(prefix):
+                    found_match = True
                     yield (key, value)
-                elif prefix and not key.startswith(prefix):
-                    # Key doesn't match prefix and we're past all matches (keys are sorted)
+                elif prefix and found_match:
+                    # We've passed all matching keys (keys are sorted)
                     break
             else:
                 # Non-string keys - only yield if no prefix
