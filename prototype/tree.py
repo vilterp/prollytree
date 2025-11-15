@@ -25,6 +25,40 @@ from typing import Optional
 from store import Node, Store, MemoryStore
 
 
+class BatchStats:
+    """Statistics for a single batch operation."""
+    __slots__ = ('nodes_created', 'leaves_created', 'internals_created',
+                 'nodes_reused', 'subtrees_reused', 'nodes_read')
+
+    def __init__(self):
+        self.nodes_created = 0
+        self.leaves_created = 0
+        self.internals_created = 0
+        self.nodes_reused = 0
+        self.subtrees_reused = 0
+        self.nodes_read = 0
+
+    def reset(self):
+        """Reset all counters to zero."""
+        self.nodes_created = 0
+        self.leaves_created = 0
+        self.internals_created = 0
+        self.nodes_reused = 0
+        self.subtrees_reused = 0
+        self.nodes_read = 0
+
+    def to_dict(self):
+        """Convert to dictionary for backwards compatibility."""
+        return {
+            'nodes_created': self.nodes_created,
+            'leaves_created': self.leaves_created,
+            'internals_created': self.internals_created,
+            'nodes_reused': self.nodes_reused,
+            'subtrees_reused': self.subtrees_reused,
+            'nodes_read': self.nodes_read,
+        }
+
+
 class ProllyTree:
     def __init__(self, pattern=0.25, seed=42, store: Optional[Store] = None):
         """
@@ -43,18 +77,11 @@ class ProllyTree:
         self.root = Node(is_leaf=True)
 
         # Operation statistics
-        self.reset_stats()
+        self.stats = BatchStats()
 
     def reset_stats(self):
         """Reset operation statistics for a new batch"""
-        self.stats = {
-            'nodes_created': 0,
-            'leaves_created': 0,
-            'internals_created': 0,
-            'nodes_reused': 0,
-            'subtrees_reused': 0,
-            'nodes_read': 0,
-        }
+        self.stats.reset()
 
     def _rolling_hash(self, current_hash, data):
         """
@@ -105,6 +132,13 @@ class ProllyTree:
         existing = self.store.get_node(node_hash)
         if existing is None:
             self.store.put_node(node_hash, node)
+            self.stats.nodes_created += 1
+            if node.is_leaf:
+                self.stats.leaves_created += 1
+            else:
+                self.stats.internals_created += 1
+        else:
+            self.stats.nodes_reused += 1
 
         return node_hash
 
@@ -118,6 +152,9 @@ class ProllyTree:
         mutations: sorted list of (key, value) tuples
         Returns: dict with operation stats
         """
+        # Reset stats for this batch
+        self.reset_stats()
+
         # Track cache stats before this batch (if using CachedFSStore)
         from store import CachedFSStore
         cache_stats_before = None
@@ -512,16 +549,7 @@ class ProllyTree:
 
     def _summarize_ops(self):
         """Summarize operations into statistics"""
-        stats = {
-            'total_ops': 0,
-            'nodes_created': 0,
-            'nodes_reused': 0,
-            'subtrees_reused': 0,
-            'nodes_read': 0,
-            'leaves_created': 0,
-            'internals_created': 0,
-        }
-        return stats
+        return self.stats.to_dict()
 
     def items(self, prefix=""):
         """
