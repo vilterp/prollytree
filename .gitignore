@@ -74,3 +74,6 @@ python/docs/_templates/
 *.inv
 searchindex.js
 tests/test-data/
+
+temp/
+.prolly/
