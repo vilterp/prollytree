@@ -89,6 +89,9 @@ class Differ:
         This algorithm handles trees with different structures by comparing
         key-value pairs directly, regardless of tree shape.
 
+        When a prefix is provided, uses O(log n) seeking to jump directly to
+        the prefix location in both trees, avoiding unnecessary iteration.
+
         Args:
             old_hash: Root hash of the old tree
             new_hash: Root hash of the new tree
@@ -106,16 +109,30 @@ class Differ:
             self.stats.subtrees_skipped += 1
             return
 
-        # Create cursors for both trees
-        old_cursor = TreeCursor(self.store, old_hash)
-        new_cursor = TreeCursor(self.store, new_hash)
+        # Create cursors for both trees, seeking to prefix if provided
+        # This provides O(log n) performance when diffing with a prefix filter
+        old_cursor = TreeCursor(self.store, old_hash, seek_to=prefix)
+        new_cursor = TreeCursor(self.store, new_hash, seek_to=prefix)
 
         # Get first entries
         old_entry = old_cursor.next()
         new_entry = new_cursor.next()
 
+        # Track if we've found any matches (for early termination with prefix)
+        found_match = False
+
         # Merge-like traversal of both trees
         while old_entry is not None or new_entry is not None:
+            # Early termination: if we have a prefix and both entries don't match,
+            # and we've already found matches, we're past the prefix range
+            if prefix:
+                old_matches = old_entry is not None and self._matches_prefix(old_entry[0])
+                new_matches = new_entry is not None and self._matches_prefix(new_entry[0])
+
+                if found_match and not old_matches and not new_matches:
+                    # We've passed the prefix range - stop
+                    break
+
             # Check for subtree skipping opportunity
             if old_entry is not None and new_entry is not None:
                 old_next_hash = old_cursor.peek_next_hash()
@@ -134,7 +151,11 @@ class Differ:
                 # Only new entries remain - all additions
                 while new_entry is not None:
                     if self._matches_prefix(new_entry[0]):
+                        found_match = True
                         yield Added(new_entry[0], new_entry[1])
+                    elif prefix and found_match:
+                        # Past prefix range
+                        break
                     new_entry = new_cursor.next()
                 break
 
@@ -142,7 +163,11 @@ class Differ:
                 # Only old entries remain - all deletions
                 while old_entry is not None:
                     if self._matches_prefix(old_entry[0]):
+                        found_match = True
                         yield Deleted(old_entry[0], old_entry[1])
+                    elif prefix and found_match:
+                        # Past prefix range
+                        break
                     old_entry = old_cursor.next()
                 break
 
@@ -153,11 +178,13 @@ class Differ:
             if old_key < new_key:
                 # Key only in old tree - deleted
                 if self._matches_prefix(old_key):
+                    found_match = True
                     yield Deleted(old_key, old_value)
                 old_entry = old_cursor.next()
             elif old_key > new_key:
                 # Key only in new tree - added
                 if self._matches_prefix(new_key):
+                    found_match = True
                     yield Added(new_key, new_value)
                 new_entry = new_cursor.next()
             else:
@@ -165,6 +192,7 @@ class Differ:
                 if old_value != new_value:
                     # Value changed - modified
                     if self._matches_prefix(old_key):
+                        found_match = True
                         yield Modified(old_key, old_value, new_value)
                 # else: values are identical, no diff event needed
 

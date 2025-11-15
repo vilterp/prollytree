@@ -22,7 +22,7 @@ import time
 from typing import Optional, List
 
 from db import DB
-from store import create_store_from_spec
+from store import create_store_from_spec, CachedFSStore
 from diff import Differ, Added, Deleted, Modified
 from sqlite_import import import_sqlite_database, import_sqlite_table, validate_tree_sorted
 from commonality import compute_commonality, print_commonality_report
