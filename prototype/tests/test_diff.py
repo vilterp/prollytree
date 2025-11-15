@@ -80,8 +80,8 @@ def test_diff_deletions_only(store):
     events = list(diff(store, hash1, hash2))
 
     assert len(events) == 2
-    assert events[0] == Deleted(3)
-    assert events[1] == Deleted(4)
+    assert events[0] == Deleted(3, "c")
+    assert events[1] == Deleted(4, "d")
 
 
 def test_diff_modifications_only(store):
@@ -122,7 +122,7 @@ def test_diff_mixed_changes(store):
     # Expected: Modified(1, "a" -> "A"), Deleted(3), Added(4, "d")
     assert len(events) == 3
     assert events[0] == Modified(1, "a", "A")
-    assert events[1] == Deleted(3)
+    assert events[1] == Deleted(3, "c")
     assert events[2] == Added(4, "d")
 
 
@@ -187,9 +187,9 @@ def test_diff_populated_to_empty(store):
     events = list(diff(store, hash1, hash2))
 
     assert len(events) == 3
-    assert events[0] == Deleted(1)
-    assert events[1] == Deleted(2)
-    assert events[2] == Deleted(3)
+    assert events[0] == Deleted(1, "a")
+    assert events[1] == Deleted(2, "b")
+    assert events[2] == Deleted(3, "c")
 
 
 def test_diff_with_string_keys(store):
@@ -217,7 +217,7 @@ def test_diff_with_string_keys(store):
 
     assert len(events) == 3
     assert events[0] == Modified("/d/users/1", "Alice", "Alice Smith")
-    assert events[1] == Deleted("/d/users/2")
+    assert events[1] == Deleted("/d/users/2", "Bob")
     assert events[2] == Added("/d/users/3", "Charlie")
 
 

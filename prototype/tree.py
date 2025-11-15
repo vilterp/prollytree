@@ -105,15 +105,11 @@ class ProllyTree:
         existing = self.store.get_node(node_hash)
         if existing is None:
             self.store.put_node(node_hash, node)
-            self.ops.append(('create_node', 'leaf' if node.is_leaf else 'internal', len(node.keys)))
-        else:
-            self.ops.append(('reuse_existing', node_hash))
 
         return node_hash
 
     def _get_node(self, node_hash):
         """Retrieve node by hash"""
-        self.ops.append(('read_node', node_hash))
         return self.store.get_node(node_hash)
 
     def insert_batch(self, mutations, verbose=True):
@@ -130,8 +126,6 @@ class ProllyTree:
                 'hits': self.store.cache_hits,
                 'misses': self.store.cache_misses
             }
-
-        self.reset_ops()
 
         # Rebuild tree with mutations (always quiet during rebuild)
         new_root = self._rebuild_with_mutations(self.root, mutations, verbose=False)
@@ -180,7 +174,6 @@ class ProllyTree:
             # No mutations for this subtree - REUSE it!
             if verbose:
                 print(f"  -> No mutations, reusing node")
-            self.ops.append(('reuse_node', 'leaf' if node.is_leaf else 'internal'))
             return node
 
         if node.is_leaf:
@@ -257,7 +250,6 @@ class ProllyTree:
 
                 if not child_mutations:
                     # No mutations - reuse the existing child by its hash!
-                    self.ops.append(('reuse_subtree', child_hash))
                     # We need the actual node to get its first key for separators
                     child_node = self._get_node(child_hash)
                     # Mark this child as reused by storing the hash in a special way
@@ -492,13 +484,13 @@ class ProllyTree:
     def _summarize_ops(self):
         """Summarize operations into statistics"""
         stats = {
-            'total_ops': len(self.ops),
-            'nodes_created': sum(1 for op in self.ops if op[0] == 'create_node'),
-            'nodes_reused': sum(1 for op in self.ops if op[0] in ('reuse_node', 'reuse_subtree')),
-            'subtrees_reused': sum(1 for op in self.ops if op[0] == 'reuse_subtree'),
-            'nodes_read': sum(1 for op in self.ops if op[0] == 'read_node'),
-            'leaves_created': sum(1 for op in self.ops if op[0] == 'create_node' and op[1] == 'leaf'),
-            'internals_created': sum(1 for op in self.ops if op[0] == 'create_node' and op[1] == 'internal'),
+            'total_ops': 0,
+            'nodes_created': 0,
+            'nodes_reused': 0,
+            'subtrees_reused': 0,
+            'nodes_read': 0,
+            'leaves_created': 0,
+            'internals_created': 0,
         }
         return stats
 
