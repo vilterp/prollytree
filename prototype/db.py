@@ -145,8 +145,12 @@ class DB:
 
         for row in rows:
             # Build primary key from row values
-            pk_indices = [table.columns.index(col) for col in table.primary_key]
-            pk_parts = [str(row[i]) for i in pk_indices]
+            # Special case: if primary_key is ["rowid"], the first element is the rowid
+            if table.primary_key == ["rowid"]:
+                pk_parts = [str(row[0])]
+            else:
+                pk_indices = [table.columns.index(col) for col in table.primary_key]
+                pk_parts = [str(row[i]) for i in pk_indices]
             pk_value = "/".join(pk_parts)
 
             # Create key-value pair
