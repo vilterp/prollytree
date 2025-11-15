@@ -169,10 +169,17 @@ class CachedFSStore:
         # Statistics
         self.cache_hits = 0
         self.cache_misses = 0
+        self.cache_evictions = 0
 
     def put_node(self, node_hash: str, node: Node) -> None:
         """Store a node to both cache and filesystem."""
-        # Write to filesystem first (tracks size)
+        # Check if already in cache - if so, no need to write to filesystem
+        if node_hash in self.cache:
+            # Already have this node, just refresh it in cache
+            self._cache_put(node_hash, node)
+            return
+
+        # Not in cache - write to filesystem first (tracks size)
         self.fs_store.put_node(node_hash, node)
 
         # Add to cache (will evict if needed)
@@ -220,6 +227,7 @@ class CachedFSStore:
             # Evict oldest if over capacity
             if len(self.cache) > self.cache_size:
                 self.cache.popitem(last=False)  # Remove first (oldest) item
+                self.cache_evictions += 1
 
     def get_cache_stats(self):
         """Return cache statistics."""
@@ -230,6 +238,7 @@ class CachedFSStore:
             'max_cache_size': self.cache_size,
             'cache_hits': self.cache_hits,
             'cache_misses': self.cache_misses,
+            'cache_evictions': self.cache_evictions,
             'hit_rate': f"{hit_rate:.1f}%"
         }
 
