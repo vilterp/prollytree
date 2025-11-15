@@ -14,11 +14,18 @@
 Tests for ProllyTree implementation.
 """
 
+import pytest
 from tree import ProllyTree
 from store import MemoryStore
 
 
-def test_insert(old_tree, mutations, expected_contents, verbose=True):
+@pytest.fixture
+def empty_tree():
+    """Create an empty tree with test parameters."""
+    return ProllyTree(pattern=0.0001, seed=42)
+
+
+def _do_insert(old_tree, mutations, expected_contents, verbose=False):
     """
     Helper function to test batch insert (functional style).
 
@@ -69,62 +76,80 @@ def test_insert(old_tree, mutations, expected_contents, verbose=True):
     return new_tree, stats
 
 
-if __name__ == "__main__":
-    # Use a low pattern for more predictable splitting in tests
-    # pattern=0.0001 means split when hash < 429,497 (out of 4,294,967,296)
-    tree0 = ProllyTree(pattern=0.0001, seed=42)
-
-    print("\n" + "="*80)
-    print("TEST 1: Insert batch into empty tree")
-    print("="*80)
-    tree1, stats1 = test_insert(
-        tree0,
+def test_insert_into_empty_tree(empty_tree):
+    """Test inserting batch into empty tree."""
+    tree1, stats1 = _do_insert(
+        empty_tree,
         mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
         expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
-        verbose=True
     )
-    # With rolling hash, node count may vary - just check it completed
-    print(f"✓ TEST 1 PASSED (created {stats1['nodes_created']} nodes)")
+    assert stats1['nodes_created'] > 0
 
-    print("\n" + "="*80)
-    print("TEST 2: Insert batch with interleaved keys")
-    print("="*80)
-    tree2, stats2 = test_insert(
+
+def test_insert_interleaved_keys(empty_tree):
+    """Test inserting batch with interleaved keys."""
+    tree1, _ = _do_insert(
+        empty_tree,
+        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+    )
+
+    tree2, stats2 = _do_insert(
         tree1,
         mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
         expected_contents=[(i, f"v{i}") for i in range(1, 13)],
-        verbose=True
     )
-    print(f"✓ TEST 2 PASSED (created {stats2['nodes_created']} nodes)")
+    assert stats2['nodes_created'] > 0
 
-    print("\n" + "="*80)
-    print("TEST 3: Insert batch with keys in unaffected range")
-    print("="*80)
+
+def test_insert_unaffected_range(empty_tree):
+    """Test inserting batch with keys in unaffected range."""
+    tree1, _ = _do_insert(
+        empty_tree,
+        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+    )
+
+    tree2, _ = _do_insert(
+        tree1,
+        mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
+        expected_contents=[(i, f"v{i}") for i in range(1, 13)],
+    )
+
     # Insert keys > 12, which should only affect the right subtree
-    tree3, stats3 = test_insert(
+    tree3, stats3 = _do_insert(
         tree2,
         mutations=[(i, f"v{i}") for i in [13, 14, 15, 16]],
         expected_contents=[(i, f"v{i}") for i in range(1, 17)],
-        verbose=True
     )
-    # Check if we reused any subtrees
-    if stats3['subtrees_reused'] > 0:
-        print(f"✓ TEST 3 PASSED - {stats3['subtrees_reused']} subtree(s) reused!")
-    else:
-        print(f"✓ TEST 3 PASSED (no subtree reuse, different splits)")
+    # Note: subtree reuse depends on how splits occur with the rolling hash
+    assert stats3['nodes_created'] > 0
 
-    print("\n" + "="*80)
-    print("TEST 4: Large insert causing more splits")
-    print("="*80)
+
+def test_large_insert_multiple_splits(empty_tree):
+    """Test large insert causing multiple splits."""
+    tree1, _ = _do_insert(
+        empty_tree,
+        mutations=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+        expected_contents=[(i, f"v{i}") for i in [2, 4, 6, 8, 10, 12]],
+    )
+
+    tree2, _ = _do_insert(
+        tree1,
+        mutations=[(i, f"v{i}") for i in [1, 3, 5, 7, 9, 11]],
+        expected_contents=[(i, f"v{i}") for i in range(1, 13)],
+    )
+
+    tree3, _ = _do_insert(
+        tree2,
+        mutations=[(i, f"v{i}") for i in [13, 14, 15, 16]],
+        expected_contents=[(i, f"v{i}") for i in range(1, 17)],
+    )
+
     # Insert many more keys to cause internal nodes to split
-    tree4, stats4 = test_insert(
+    tree4, stats4 = _do_insert(
         tree3,
         mutations=[(i, f"v{i}") for i in range(17, 41)],  # Add 24 more keys (17-40)
         expected_contents=[(i, f"v{i}") for i in range(1, 41)],
-        verbose=True
     )
-    print(f"✓ TEST 4 PASSED (created {stats4['nodes_created']} nodes, reused {stats4['subtrees_reused']} subtrees)")
-
-    print("\n" + "="*80)
-    print("ALL TESTS PASSED!")
-    print("="*80)
+    assert stats4['nodes_created'] > 0
