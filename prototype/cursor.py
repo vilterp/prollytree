@@ -30,13 +30,14 @@ class TreeCursor:
     It also supports peeking at the next hash to enable efficient subtree skipping.
     """
 
-    def __init__(self, store: Store, root_hash: str):
+    def __init__(self, store: Store, root_hash: str, seek_to: Optional[str] = None):
         """
-        Initialize cursor at the beginning of the tree.
+        Initialize cursor at the beginning of the tree or at a specific prefix.
 
         Args:
             store: Storage backend
             root_hash: Root hash of tree to traverse
+            seek_to: Optional key/prefix to seek to (default: start at beginning)
         """
         self.store = store
         self.root_hash = root_hash
@@ -45,8 +46,57 @@ class TreeCursor:
         self.stack = []
         # Current key-value pair (None until first next() call)
         self.current = None
-        # Initialize by descending to first leaf
-        self._descend_to_first(root_hash)
+        # Initialize by descending to first leaf or seeking to prefix
+        if seek_to:
+            self._seek(root_hash, seek_to)
+        else:
+            self._descend_to_first(root_hash)
+
+    def _seek(self, node_hash: str, target: str):
+        """
+        Seek to the first key >= target in O(log n) time.
+
+        Args:
+            node_hash: Starting node hash
+            target: Target key/prefix to seek to
+        """
+        node = self.store.get_node(node_hash)
+        if node is None:
+            return
+
+        while not node.is_leaf:
+            # Internal node: binary search for the right child
+            # Find the first child whose range could contain target
+            child_idx = 0
+            for i, separator in enumerate(node.keys):
+                if target >= separator:
+                    child_idx = i + 1
+                else:
+                    break
+
+            # Push this node with the child index
+            self.stack.append((node, child_idx))
+
+            # Descend into the chosen child
+            if child_idx < len(node.values):
+                child_hash = node.values[child_idx]
+                node = self.store.get_node(child_hash)
+                if node is None:
+                    return
+            else:
+                return
+
+        # At a leaf node: find first key >= target
+        idx = 0
+        for i, key in enumerate(node.keys):
+            if isinstance(key, str) and key >= target:
+                idx = i
+                break
+        else:
+            # All keys in this leaf are < target
+            idx = len(node.keys)
+
+        self.stack.append((node, idx))
 
     def _descend_to_first(self, node_hash: str):
         """Descend to the leftmost leaf starting from node_hash."""
