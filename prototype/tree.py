@@ -519,9 +519,6 @@ class ProllyTree:
                 if isinstance(key, str):
                     if key.startswith(prefix):
                         yield (key, value)
-                    elif prefix and key > prefix + '\xff':  # Past the end of prefix range
-                        # We've gone past the prefix range
-                        return
                 else:
                     # For non-string keys, only yield if prefix is empty
                     if not prefix:
