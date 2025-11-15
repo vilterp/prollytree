@@ -192,27 +192,8 @@ def remove_garbage(store: Store, garbage_hashes: Set[str]) -> int:
     removed_count = 0
 
     for node_hash in garbage_hashes:
-        # Different stores have different removal methods
-        if hasattr(store, 'nodes'):
-            # MemoryStore
-            if node_hash in store.nodes:
-                del store.nodes[node_hash]
-                removed_count += 1
-        elif hasattr(store, 'base_path'):
-            # FileSystemStore
-            import os
-            path = store._node_path(node_hash)
-            if os.path.exists(path):
-                os.remove(path)
-                removed_count += 1
-        elif hasattr(store, 'fs_store'):
-            # CachedFSStore - remove from both cache and filesystem
-            if node_hash in store.cache:
-                del store.cache[node_hash]
-            # Remove from filesystem
-            removed_count += remove_garbage(store.fs_store, {node_hash})
-        else:
-            raise NotImplementedError(f"Cannot remove nodes from store type {type(store).__name__}")
+        if store.delete_node(node_hash):
+            removed_count += 1
 
     return removed_count
 

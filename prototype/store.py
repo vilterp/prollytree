@@ -37,6 +37,10 @@ class Store(Protocol):
         """Retrieve a node by its hash. Returns None if not found."""
         ...
 
+    def delete_node(self, node_hash: str) -> bool:
+        """Delete a node by its hash. Returns True if deleted, False if not found."""
+        ...
+
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
         ...
@@ -55,6 +59,13 @@ class MemoryStore:
     def get_node(self, node_hash: str) -> Optional[Node]:
         """Retrieve a node from memory."""
         return self.nodes.get(node_hash)
+
+    def delete_node(self, node_hash: str) -> bool:
+        """Delete a node from memory."""
+        if node_hash in self.nodes:
+            del self.nodes[node_hash]
+            return True
+        return False
 
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
@@ -124,6 +135,14 @@ class FileSystemStore:
         with open(path, 'r') as f:
             return self._deserialize_node(f.read())
 
+    def delete_node(self, node_hash: str) -> bool:
+        """Delete a node from filesystem."""
+        path = self._node_path(node_hash)
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        return False
+
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
         count = 0
@@ -189,6 +208,15 @@ class CachedFSStore:
             self._cache_put(node_hash, node)
 
         return node
+
+    def delete_node(self, node_hash: str) -> bool:
+        """Delete a node from both cache and filesystem."""
+        # Remove from cache if present
+        if node_hash in self.cache:
+            del self.cache[node_hash]
+
+        # Remove from filesystem
+        return self.fs_store.delete_node(node_hash)
 
     def count_nodes(self) -> int:
         """Return the total number of nodes in storage."""
