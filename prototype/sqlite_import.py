@@ -21,6 +21,8 @@ import json
 import time
 import sys
 import argparse
+import os
+import glob
 from tree import ProllyTree
 from store import create_store_from_spec, CachedFSStore
 
@@ -37,7 +39,7 @@ def get_primary_key(cursor, table_name):
     # If no primary key, use rowid
     return "rowid"
 
-def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:', cache_size=None, verbose_batches=False):
+def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store=None, store_spec=':memory:', cache_size=None, verbose_batches=False):
     """
     Import all tables from SQLite into ProllyTree.
 
@@ -46,7 +48,10 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
         pattern: ProllyTree split pattern (default 0.0001)
         seed: Random seed for rolling hash
         batch_size: Number of rows to insert per batch
-        store_spec: Store specification (:memory:, file://path, s3://bucket)
+        store: Existing store instance to use (optional, for sharing across multiple databases)
+        store_spec: Store specification (:memory:, file://path, s3://bucket) - only used if store is None
+        cache_size: Cache size for cached stores
+        verbose_batches: Show detailed statistics for every batch
     """
     print(f"Opening database: {db_path}")
     conn = sqlite3.connect(db_path)
@@ -57,11 +62,15 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
     tables = [row[0] for row in cursor.fetchall()]
     print(f"Found {len(tables)} tables: {', '.join(tables)}")
 
-    # Initialize ProllyTree with specified store
-    print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed}, store={store_spec})")
-    if cache_size:
-        print(f"  Cache size: {cache_size}")
-    store = create_store_from_spec(store_spec, cache_size=cache_size)
+    # Initialize store if not provided
+    if store is None:
+        print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed}, store={store_spec})")
+        if cache_size:
+            print(f"  Cache size: {cache_size}")
+        store = create_store_from_spec(store_spec, cache_size=cache_size)
+    else:
+        print(f"\nInitializing ProllyTree (pattern={pattern}, seed={seed}, using shared store)")
+
     tree = ProllyTree(pattern=pattern, seed=seed, store=store)
 
     total_rows = 0
@@ -194,27 +203,121 @@ def import_sqlite(db_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=
     conn.close()
     return tree
 
+
+def import_directory(dir_path, pattern=0.0001, seed=42, batch_size=1000, store_spec=':memory:', cache_size=None, verbose_batches=False):
+    """
+    Import all SQLite databases from a directory into separate ProllyTrees sharing the same store.
+
+    Args:
+        dir_path: Path to directory containing SQLite database files
+        pattern: ProllyTree split pattern (default 0.0001)
+        seed: Random seed for rolling hash
+        batch_size: Number of rows to insert per batch
+        store_spec: Store specification (:memory:, file://path, s3://bucket)
+        cache_size: Cache size for cached stores
+        verbose_batches: Show detailed statistics for every batch
+
+    Returns:
+        dict: Mapping of db_name -> (tree, root_hash)
+    """
+    # Find all .sqlite files in directory
+    db_files = glob.glob(os.path.join(dir_path, '*.sqlite')) + \
+               glob.glob(os.path.join(dir_path, '*.db'))
+
+    if not db_files:
+        print(f"No SQLite files found in {dir_path}")
+        return {}
+
+    print(f"Found {len(db_files)} SQLite databases in {dir_path}")
+    for db_file in db_files:
+        print(f"  - {os.path.basename(db_file)}")
+
+    # Create shared store
+    print(f"\nInitializing shared store: {store_spec}")
+    if cache_size:
+        print(f"  Cache size: {cache_size}")
+    store = create_store_from_spec(store_spec, cache_size=cache_size)
+
+    results = {}
+    total_start = time.time()
+
+    for db_path in sorted(db_files):
+        db_name = os.path.basename(db_path)
+        print(f"\n{'='*80}")
+        print(f"Processing database: {db_name}")
+        print(f"{'='*80}")
+
+        # Import this database using the shared store
+        tree = import_sqlite(
+            db_path,
+            pattern=pattern,
+            seed=seed,
+            batch_size=batch_size,
+            store=store,  # Use shared store
+            verbose_batches=verbose_batches
+        )
+
+        # Store results
+        root_hash = tree._hash_node(tree.root)
+        results[db_name] = (tree, root_hash)
+
+        print(f"\n{db_name} root hash: {root_hash}")
+
+    # Print overall summary
+    total_time = time.time() - total_start
+    print(f"\n{'='*80}")
+    print(f"Directory import complete!")
+    print(f"{'='*80}")
+    print(f"Total databases: {len(results)}")
+    print(f"Total time: {total_time:.2f}s")
+    print(f"\nStore statistics:")
+    print(f"  Total nodes in shared store: {store.count_nodes():,}")
+
+    if isinstance(store, CachedFSStore):
+        cache_stats = store.get_cache_stats()
+        print(f"\nShared cache statistics:")
+        for key, value in cache_stats.items():
+            print(f"  {key}: {value}")
+
+        creation_stats = store.get_creation_stats()
+        print(f"\nCumulative node creation across all databases:")
+        print(f"  Total leaves: {creation_stats['total_leaves_created']:,}")
+        print(f"  Total internals: {creation_stats['total_internals_created']:,}")
+
+        print(f"\nSize distributions across all databases:")
+        store.print_distributions(bucket_count=10)
+
+    print(f"\nRoot hashes by database:")
+    for db_name, (_, root_hash) in sorted(results.items()):
+        print(f"  {db_name}: {root_hash}")
+
+    return results
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description='Import SQLite database into ProllyTree',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 Examples:
-  # Import to memory
+  # Import single database to memory
   python sqlite_import.py database.sqlite
 
-  # Import to filesystem
+  # Import single database to filesystem
   python sqlite_import.py database.sqlite --store file:///tmp/prolly_data
+
+  # Import directory of databases with shared cached store
+  python sqlite_import.py /path/to/db/directory --store cached-file:///tmp/shared_store --cache-size 1000
+
+  # Import directory with verbose batch output
+  python sqlite_import.py /path/to/db/directory --directory --verbose-batches
 
   # Import with custom pattern and seed
   python sqlite_import.py database.sqlite --pattern 0.0001 --seed 42
-
-  # Import to S3 (not yet implemented)
-  python sqlite_import.py database.sqlite --store s3://my-bucket
         '''
     )
 
-    parser.add_argument('database', help='Path to SQLite database file')
+    parser.add_argument('path', help='Path to SQLite database file or directory containing SQLite files')
     parser.add_argument('--pattern', type=float, default=0.0001,
                         help='Split pattern (default: 0.0001)')
     parser.add_argument('--seed', type=int, default=42,
@@ -227,15 +330,31 @@ Examples:
                         help='Cache size for cached stores (default: 1000)')
     parser.add_argument('--verbose-batches', action='store_true',
                         help='Show detailed statistics for every batch insert')
+    parser.add_argument('--directory', action='store_true',
+                        help='Import all SQLite files from a directory using a shared store')
 
     args = parser.parse_args()
 
-    tree = import_sqlite(
-        args.database,
-        pattern=args.pattern,
-        seed=args.seed,
-        batch_size=args.batch_size,
-        store_spec=args.store,
-        cache_size=args.cache_size,
-        verbose_batches=args.verbose_batches
-    )
+    # Check if path is a directory or a file
+    if args.directory or os.path.isdir(args.path):
+        # Directory import with shared store
+        results = import_directory(
+            args.path,
+            pattern=args.pattern,
+            seed=args.seed,
+            batch_size=args.batch_size,
+            store_spec=args.store,
+            cache_size=args.cache_size,
+            verbose_batches=args.verbose_batches
+        )
+    else:
+        # Single file import
+        tree = import_sqlite(
+            args.path,
+            pattern=args.pattern,
+            seed=args.seed,
+            batch_size=args.batch_size,
+            store_spec=args.store,
+            cache_size=args.cache_size,
+            verbose_batches=args.verbose_batches
+        )
